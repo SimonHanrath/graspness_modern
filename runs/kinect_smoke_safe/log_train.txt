@@ -1,0 +1,112 @@
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2048, resume=False, seed_feat_dim=512, voxel_size=0.015)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-21 14:03:58.417406
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2048, resume=False, seed_feat_dim=512, voxel_size=0.015)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 10:33:45.383556
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2048, resume=False, seed_feat_dim=512, voxel_size=0.015)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:04:07.856295
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2048, resume=False, seed_feat_dim=512, voxel_size=0.015)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:09:42.028236
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2048, resume=False, seed_feat_dim=512, voxel_size=0.015)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:12:42.129827
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:17:09.983207
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:26:08.758863
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:39:39.551188
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:47:02.999878
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:56:10.173511
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 11:58:14.079231
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:09:42.805843
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:12:42.621759
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:16:49.461278
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:23:32.406438
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:27:55.892480
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:31:37.224644
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:33:36.675788
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=5000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-22 12:35:35.640229
+Namespace(batch_size=4, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:32:01.380183
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=15000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:39:58.686236
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=5000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:42:44.185377
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=5000, resume=False, seed_feat_dim=512, voxel_size=0.01)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:45:25.335204
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=1000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:47:22.854420
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=1000, resume=False, seed_feat_dim=512, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:51:47.200136
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=1000, resume=False, seed_feat_dim=128, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:54:24.729408
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2000, resume=False, seed_feat_dim=128, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-23 09:56:14.092642
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_safe', max_epoch=1, model_name='graspness_kinect_smoke', num_point=2000, resume=False, seed_feat_dim=128, voxel_size=0.005)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-27 09:31:48.984583

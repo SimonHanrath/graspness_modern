@@ -1,0 +1,4 @@
+Namespace(batch_size=1, camera='kinect', checkpoint_path=None, dataset_root='/cshome/shanrath/datasets/GraspNet', learning_rate=0.001, log_dir='runs/kinect_smoke_dbg', max_epoch=1, model_name='graspness_kinect_smoke', num_point=4096, resume=False, seed_feat_dim=512, voxel_size=0.01)
+**** EPOCH 000 ****
+Current learning rate: 0.001000
+2025-10-21 13:43:33.810992
