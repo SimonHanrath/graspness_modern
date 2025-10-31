@@ -7,13 +7,13 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
-import MinkowskiEngine as ME
+import spconv.pytorch as spconv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
-from models.backbone_resunet14 import MinkUNet14D
+from models.backbone_resunet14 import SPconvUNet14D
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
 from label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
@@ -30,7 +30,7 @@ class GraspNet(nn.Module):
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
 
-        self.backbone = MinkUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
@@ -41,9 +41,16 @@ class GraspNet(nn.Module):
         B, point_num, _ = seed_xyz.shape  # batch _size
         # point-wise features
         coordinates_batch = end_points['coors']
+        print(coordinates_batch[:5]) # TODO: remove
         features_batch = end_points['feats']
-        mink_input = ME.SparseTensor(features_batch, coordinates=coordinates_batch)
-        seed_features = self.backbone(mink_input).F
+        coords_i32 = coordinates_batch.int()
+        sparse_input = spconv.SparseConvTensor( #TODO here I replaced the Minkowski logic and I need to verify that it works
+            features_batch,          
+            coords_i32,
+            (coords_i32[:, 1:].amax(dim=0) + 1).tolist(),   # TODO [X, Y, Z] if coords are (b, x, y, z),           
+            B              
+        )
+        seed_features = self.backbone(sparse_input).features
         seed_features = seed_features[end_points['quantize2original']].view(B, point_num, -1).transpose(1, 2)
 
         end_points = self.graspable(seed_features, end_points)

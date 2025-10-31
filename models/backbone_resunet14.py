@@ -1,9 +1,70 @@
-import MinkowskiEngine as ME
-from MinkowskiEngine.modules.resnet_block import BasicBlock, Bottleneck
+import torch
+import torch.nn as nn
+import spconv.pytorch as spconv
 from models.resnet import ResNetBase
 
 
-class MinkUNetBase(ResNetBase):
+def sparse_cat(a: spconv.SparseConvTensor, b: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
+    if not torch.equal(a.indices, b.indices):
+        raise ValueError("sparse_cat: indices differ; ensure matching indice_key / inverse conv alignment.")
+    if a.spatial_shape != b.spatial_shape or a.batch_size != b.batch_size:
+        raise ValueError("sparse_cat: spatial_shape or batch_size mismatch.")
+
+    return a.replace_feature(torch.cat([a.features, b.features], dim=1))
+
+class BasicBlock(spconv.SparseModule):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, bn_momentum=0.1, indice_key=None):
+        super().__init__()
+
+        ConvLayer = spconv.SubMConv3d if stride == 1 else spconv.SparseConv3d
+
+        self.conv1 = ConvLayer(
+            inplanes, planes,
+            kernel_size=3,
+            stride=stride,
+            padding=dilation,
+            dilation=dilation,
+            bias=False,
+            indice_key=f"{indice_key}_1" if indice_key else None
+        )
+        self.norm1 = nn.BatchNorm1d(planes, momentum=bn_momentum)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = spconv.SubMConv3d(
+            planes, planes,
+            kernel_size=3,
+            stride=1,
+            padding=dilation,
+            dilation=dilation,
+            bias=False,
+            indice_key=f"{indice_key}_2" if indice_key else None
+        )
+        self.norm2 = nn.BatchNorm1d(planes, momentum=bn_momentum)
+
+        self.downsample = downsample
+
+    def forward(self, x: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
+        identity = x
+
+        out = self.conv1(x)
+        out = out.replace_feature(self.norm1(out.features))
+        out = out.replace_feature(self.relu(out.features))
+
+        out = self.conv2(out)
+        out = out.replace_feature(self.norm2(out.features))
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = out.replace_feature(out.features + identity.features)
+
+        out = out.replace_feature(self.relu(out.features))
+        
+        return out
+
+class SPconvUNetBase(ResNetBase):
     BLOCK = None
     PLANES = None
     DILATIONS = (1, 1, 1, 1, 1, 1, 1, 1)
@@ -12,213 +73,205 @@ class MinkUNetBase(ResNetBase):
     INIT_DIM = 32
     OUT_TENSOR_STRIDE = 1
 
-    # To use the model, must call initialize_coords before forward pass.
-    # Once data is processed, call clear to reset the model before calling
-    # initialize_coords
     def __init__(self, in_channels, out_channels, D=3):
         ResNetBase.__init__(self, in_channels, out_channels, D)
 
     def network_initialization(self, in_channels, out_channels, D):
-        # Output of the first conv concated to conv6
         self.inplanes = self.INIT_DIM
-        self.conv0p1s1 = ME.MinkowskiConvolution(
-            in_channels, self.inplanes, kernel_size=5, dimension=D)
+        self.conv0p1s1 = spconv.SubMConv3d(
+            in_channels, self.inplanes, kernel_size=5, stride=1, padding=2,
+            indice_key="subm_p1"
+        )
+        self.bn0 = nn.BatchNorm1d(self.inplanes)
 
-        self.bn0 = ME.MinkowskiBatchNorm(self.inplanes)
+        self.conv1p1s2 = spconv.SparseConv3d(
+            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            indice_key="enc_p2"
+        )
+        self.bn1 = nn.BatchNorm1d(self.inplanes)
+        self.block1 = self._make_layer(self.BLOCK, self.PLANES[0], self.LAYERS[0], indice_key_prefix="subm_p2")
 
-        self.conv1p1s2 = ME.MinkowskiConvolution(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
-        self.bn1 = ME.MinkowskiBatchNorm(self.inplanes)
+        self.conv2p2s2 = spconv.SparseConv3d(
+            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            indice_key="enc_p4"
+        )
+        self.bn2 = nn.BatchNorm1d(self.inplanes)
+        self.block2 = self._make_layer(self.BLOCK, self.PLANES[1], self.LAYERS[1], indice_key_prefix="subm_p4")
 
-        self.block1 = self._make_layer(self.BLOCK, self.PLANES[0],
-                                       self.LAYERS[0])
+        self.conv3p4s2 = spconv.SparseConv3d(
+            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            indice_key="enc_p8"
+        )
+        self.bn3 = nn.BatchNorm1d(self.inplanes)
+        self.block3 = self._make_layer(self.BLOCK, self.PLANES[2], self.LAYERS[2], indice_key_prefix="subm_p8")
 
-        self.conv2p2s2 = ME.MinkowskiConvolution(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
-        self.bn2 = ME.MinkowskiBatchNorm(self.inplanes)
+        self.conv4p8s2 = spconv.SparseConv3d(
+            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            indice_key="enc_p16"
+        )
+        self.bn4 = nn.BatchNorm1d(self.inplanes)
+        self.block4 = self._make_layer(self.BLOCK, self.PLANES[3], self.LAYERS[3], indice_key_prefix="subm_p16")
 
-        self.block2 = self._make_layer(self.BLOCK, self.PLANES[1],
-                                       self.LAYERS[1])
-
-        self.conv3p4s2 = ME.MinkowskiConvolution(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
-
-        self.bn3 = ME.MinkowskiBatchNorm(self.inplanes)
-        self.block3 = self._make_layer(self.BLOCK, self.PLANES[2],
-                                       self.LAYERS[2])
-
-        self.conv4p8s2 = ME.MinkowskiConvolution(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
-        self.bn4 = ME.MinkowskiBatchNorm(self.inplanes)
-        self.block4 = self._make_layer(self.BLOCK, self.PLANES[3],
-                                       self.LAYERS[3])
-
-        self.convtr4p16s2 = ME.MinkowskiConvolutionTranspose(
-            self.inplanes, self.PLANES[4], kernel_size=2, stride=2, dimension=D)
-        self.bntr4 = ME.MinkowskiBatchNorm(self.PLANES[4])
+        self.convtr4p16s2 = spconv.SparseInverseConv3d(
+            self.inplanes, self.PLANES[4], kernel_size=2,
+            indice_key="enc_p16"
+        )
+        self.bntr4 = nn.BatchNorm1d(self.PLANES[4])
 
         self.inplanes = self.PLANES[4] + self.PLANES[2] * self.BLOCK.expansion
-        self.block5 = self._make_layer(self.BLOCK, self.PLANES[4],
-                                       self.LAYERS[4])
-        self.convtr5p8s2 = ME.MinkowskiConvolutionTranspose(
-            self.inplanes, self.PLANES[5], kernel_size=2, stride=2, dimension=D)
-        self.bntr5 = ME.MinkowskiBatchNorm(self.PLANES[5])
+        self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="subm_p8")
+
+        self.convtr5p8s2 = spconv.SparseInverseConv3d(
+            self.inplanes, self.PLANES[5], kernel_size=2,
+            indice_key="enc_p8"
+        )
+        self.bntr5 = nn.BatchNorm1d(self.PLANES[5])
 
         self.inplanes = self.PLANES[5] + self.PLANES[1] * self.BLOCK.expansion
-        self.block6 = self._make_layer(self.BLOCK, self.PLANES[5],
-                                       self.LAYERS[5])
-        self.convtr6p4s2 = ME.MinkowskiConvolutionTranspose(
-            self.inplanes, self.PLANES[6], kernel_size=2, stride=2, dimension=D)
-        self.bntr6 = ME.MinkowskiBatchNorm(self.PLANES[6])
+        self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="subm_p4")
+
+        self.convtr6p4s2 = spconv.SparseInverseConv3d(
+            self.inplanes, self.PLANES[6], kernel_size=2,
+            indice_key="enc_p4"
+        )
+        self.bntr6 = nn.BatchNorm1d(self.PLANES[6])
 
         self.inplanes = self.PLANES[6] + self.PLANES[0] * self.BLOCK.expansion
-        self.block7 = self._make_layer(self.BLOCK, self.PLANES[6],
-                                       self.LAYERS[6])
-        self.convtr7p2s2 = ME.MinkowskiConvolutionTranspose(
-            self.inplanes, self.PLANES[7], kernel_size=2, stride=2, dimension=D)
-        self.bntr7 = ME.MinkowskiBatchNorm(self.PLANES[7])
+        self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="subm_p2")
+
+        self.convtr7p2s2 = spconv.SparseInverseConv3d(
+            self.inplanes, self.PLANES[7], kernel_size=2,
+            indice_key="enc_p2"
+        )
+        self.bntr7 = nn.BatchNorm1d(self.PLANES[7])
 
         self.inplanes = self.PLANES[7] + self.INIT_DIM
-        self.block8 = self._make_layer(self.BLOCK, self.PLANES[7],
-                                       self.LAYERS[7])
+        self.block8 = self._make_layer(self.BLOCK, self.PLANES[7], self.LAYERS[7], indice_key_prefix="subm_p1")
 
-        self.final = ME.MinkowskiConvolution(
+        self.final = spconv.SubMConv3d(
             self.PLANES[7] * self.BLOCK.expansion,
             out_channels,
             kernel_size=1,
+            stride=1,
             bias=True,
-            dimension=D)
-        self.relu = ME.MinkowskiReLU(inplace=True)
+            indice_key="subm_p1"
+        )
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         out = self.conv0p1s1(x)
-        out = self.bn0(out)
-        out_p1 = self.relu(out)
+        out = out.replace_feature(self.bn0(out.features))
+        out_p1 = out.replace_feature(self.relu(out.features))
 
         out = self.conv1p1s2(out_p1)
-        out = self.bn1(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bn1(out.features))
+        out = out.replace_feature(self.relu(out.features))
         out_b1p2 = self.block1(out)
 
         out = self.conv2p2s2(out_b1p2)
-        out = self.bn2(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bn2(out.features))
+        out = out.replace_feature(self.relu(out.features))
         out_b2p4 = self.block2(out)
 
         out = self.conv3p4s2(out_b2p4)
-        out = self.bn3(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bn3(out.features))
+        out = out.replace_feature(self.relu(out.features))
         out_b3p8 = self.block3(out)
 
-        # tensor_stride=16
         out = self.conv4p8s2(out_b3p8)
-        out = self.bn4(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bn4(out.features))
+        out = out.replace_feature(self.relu(out.features))
         out = self.block4(out)
 
-        # tensor_stride=8
         out = self.convtr4p16s2(out)
-        out = self.bntr4(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bntr4(out.features))
+        out = out.replace_feature(self.relu(out.features))
 
-        out = ME.cat(out, out_b3p8)
+        out = sparse_cat(out, out_b3p8)
         out = self.block5(out)
 
-        # tensor_stride=4
         out = self.convtr5p8s2(out)
-        out = self.bntr5(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bntr5(out.features))
+        out = out.replace_feature(self.relu(out.features))
 
-        out = ME.cat(out, out_b2p4)
+        out = sparse_cat(out, out_b2p4)
         out = self.block6(out)
 
-        # tensor_stride=2
         out = self.convtr6p4s2(out)
-        out = self.bntr6(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bntr6(out.features))
+        out = out.replace_feature(self.relu(out.features))
 
-        out = ME.cat(out, out_b1p2)
+        out = sparse_cat(out, out_b1p2)
         out = self.block7(out)
 
-        # tensor_stride=1
         out = self.convtr7p2s2(out)
-        out = self.bntr7(out)
-        out = self.relu(out)
+        out = out.replace_feature(self.bntr7(out.features))
+        out = out.replace_feature(self.relu(out.features))
 
-        out = ME.cat(out, out_p1)
+        out = sparse_cat(out, out_p1)
         out = self.block8(out)
+        return out
 
-        return self.final(out)
 
 
-class MinkUNet14(MinkUNetBase):
+class SPconvUNet14(SPconvUNetBase):
     BLOCK = BasicBlock
     LAYERS = (1, 1, 1, 1, 1, 1, 1, 1)
 
 
-class MinkUNet18(MinkUNetBase):
+class SPconvUNet18(SPconvUNetBase):
     BLOCK = BasicBlock
     LAYERS = (2, 2, 2, 2, 2, 2, 2, 2)
 
 
-class MinkUNet34(MinkUNetBase):
+class SPconvUNet34(SPconvUNetBase):
     BLOCK = BasicBlock
     LAYERS = (2, 3, 4, 6, 2, 2, 2, 2)
 
 
-class MinkUNet50(MinkUNetBase):
-    BLOCK = Bottleneck
-    LAYERS = (2, 3, 4, 6, 2, 2, 2, 2)
-
-
-class MinkUNet101(MinkUNetBase):
-    BLOCK = Bottleneck
-    LAYERS = (2, 3, 4, 23, 2, 2, 2, 2)
-
-
-class MinkUNet14A(MinkUNet14):
+class SPconvUNet14A(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
 
 
-class MinkUNet14B(MinkUNet14):
+class SPconvUNet14B(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 128, 128, 128, 128)
 
 
-class MinkUNet14C(MinkUNet14):
+class SPconvUNet14C(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 192, 192, 128, 128)
 
 
-class MinkUNet14Dori(MinkUNet14):
+class SPconvUNet14Dori(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 384, 384, 384, 384)
 
 
-class MinkUNet14E(MinkUNet14):
+class SPconvUNet14E(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 384, 384, 384, 384)
 
 
-class MinkUNet14D(MinkUNet14):
+class SPconvUNet14D(SPconvUNet14):
     PLANES = (32, 64, 128, 256, 192, 192, 192, 192)
 
 
-class MinkUNet18A(MinkUNet18):
+class SPconvUNet18A(SPconvUNet18):
     PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
 
 
-class MinkUNet18B(MinkUNet18):
+class SPconvUNet18B(SPconvUNet18):
     PLANES = (32, 64, 128, 256, 128, 128, 128, 128)
 
 
-class MinkUNet18D(MinkUNet18):
+class SPconvUNet18D(SPconvUNet18):
     PLANES = (32, 64, 128, 256, 384, 384, 384, 384)
 
 
-class MinkUNet34A(MinkUNet34):
+class SPconvUNet34A(SPconvUNet34):
     PLANES = (32, 64, 128, 256, 256, 128, 64, 64)
 
 
-class MinkUNet34B(MinkUNet34):
+class SPconvUNet34B(SPconvUNet34):
     PLANES = (32, 64, 128, 256, 256, 128, 64, 32)
 
 
-class MinkUNet34C(MinkUNet34):
+class SPconvUNet34C(SPconvUNet34):
     PLANES = (32, 64, 128, 256, 256, 128, 96, 96)
