@@ -13,7 +13,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 from models.graspnet import GraspNet, pred_decode
-from dataset.graspnet_dataset import minkowski_collate_fn
+from dataset.graspnet_dataset import spconv_collate_fn
 from collision_detector import ModelFreeCollisionDetector
 from data_utils import CameraInfo, create_point_cloud_from_depth_image, get_workspace_mask
 
@@ -90,7 +90,7 @@ def my_worker_init_fn(worker_id):
 
 
 def inference(data_input):
-    batch_data = minkowski_collate_fn([data_input])
+    batch_data = spconv_collate_fn([data_input])
     net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=False)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)

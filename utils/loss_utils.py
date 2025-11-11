@@ -5,8 +5,8 @@
 import torch
 import numpy as np
 
-GRASP_MAX_WIDTH = 0.1
-GRASPNESS_THRESHOLD = 0.1 # instead of 0.1
+GRASP_MAX_WIDTH = 0.01
+GRASPNESS_THRESHOLD = 0.01 # instead of 0.1
 NUM_VIEW = 300  # TODO: reduced from 300 to fit on GPU
 NUM_ANGLE = 12  # TODO: reduced from 12to fit on GPU
 NUM_DEPTH = 4

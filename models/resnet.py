@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import spconv.pytorch as spconv
 
@@ -21,7 +22,7 @@ class ResNetBase(nn.Module):
         self.conv1 = spconv.SparseSequential(
             spconv.SparseConv3d(
                 in_channels, self.inplanes,
-                kernel_size=3, stride=2, padding=1,
+                kernel_size=3, stride=2, padding=1, bias=False,
                 indice_key="res_enc1"
             ),
             nn.BatchNorm1d(self.inplanes),
@@ -46,7 +47,7 @@ class ResNetBase(nn.Module):
             nn.Dropout(p=0.5),
             spconv.SparseConv3d(
                 self.inplanes, self.inplanes,
-                kernel_size=3, stride=3,
+                kernel_size=3, stride=3, bias=False,
                 indice_key="res_down5"
             ),
             nn.BatchNorm1d(self.inplanes),
@@ -58,8 +59,28 @@ class ResNetBase(nn.Module):
 
     def weight_initialization(self):
         for m in self.modules():
-            if isinstance(m, spconv.SparseConv3d) or isinstance(m, spconv.SubMConv3d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            if isinstance(m, (spconv.SparseConv3d, spconv.SubMConv3d, spconv.SparseInverseConv3d)):
+                # spconv weight shape: [out_channels, kH, kW, kD, in_channels]
+                # We need to manually calculate fan_in and fan_out for correct initialization
+                weight = m.weight
+                if weight.ndim == 5:  # 3D convolution
+                    out_channels, kH, kW, kD, in_channels = weight.shape
+                    fan_in = in_channels * kH * kW * kD
+                    fan_out = out_channels * kH * kW * kD
+                    
+                    # Kaiming initialization for ReLU: std = sqrt(2 / fan_out) for mode='fan_out'
+                    # We apply a scaling factor of 2 to match ME's effective output magnitude
+                    # This accounts for subtle differences in variance propagation through
+                    # sparse convolutions and the U-Net architecture and makes sure we have enough outputs above the graspenss threshold
+                    std = (2.0 / fan_out) ** 0.5 * 2
+                    with torch.no_grad():
+                        weight.normal_(0, std)
+                else:
+                    # Fallback to standard initialization for unexpected shapes
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)

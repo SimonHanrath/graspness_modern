@@ -8,12 +8,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
-import pointnet2.pytorch_utils as pt_utils
-from pointnet2.pointnet2_utils import CylinderQueryAndGroup
+import pointnet_replacement.pytorch_utils as pt_utils
+from pointnet_replacement.pointnet2_utils import CylinderQueryAndGroup
 from loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
 
 
-class GraspableNet(nn.Module):
+class GraspableNet(nn.Module): # Objectness and Graspability MLP
     def __init__(self, seed_feature_dim):
         super().__init__()
         self.in_dim = seed_feature_dim
@@ -26,7 +26,7 @@ class GraspableNet(nn.Module):
         return end_points
 
 
-class ApproachNet(nn.Module):
+class ApproachNet(nn.Module): # Probabilistic view selection
     def __init__(self, num_view, seed_feature_dim, is_training=True):
         super().__init__()
         self.num_view = num_view
@@ -73,7 +73,7 @@ class ApproachNet(nn.Module):
         return end_points, res_features
 
 
-class CloudCrop(nn.Module):
+class CloudCrop(nn.Module): # Cylinder Grouping
     def __init__(self, nsample, seed_feature_dim, cylinder_radius=0.05, hmin=-0.02, hmax=0.04):
         super().__init__()
         self.nsample = nsample
@@ -94,7 +94,7 @@ class CloudCrop(nn.Module):
         return new_features
 
 
-class SWADNet(nn.Module):
+class SWADNet(nn.Module): # Grasp pose predicition head
     def __init__(self, num_angle, num_depth):
         super().__init__()
         self.num_angle = num_angle

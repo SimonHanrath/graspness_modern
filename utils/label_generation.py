@@ -11,7 +11,7 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 # sys.path.append(os.path.join(ROOT_DIR, 'knn'))
 
-from knn.knn_modules import knn
+from knn_replacement.knn_modules import knn
 from loss_utils import GRASP_MAX_WIDTH, batch_viewpoint_params_to_matrix, \
     transform_point_cloud, generate_grasp_views
 
@@ -52,7 +52,7 @@ def process_grasp_labels(end_points):
             # assign views
             grasp_views_ = grasp_views.transpose(0, 1).contiguous().unsqueeze(0)
             grasp_views_trans_ = grasp_views_trans.transpose(0, 1).contiguous().unsqueeze(0)
-            view_inds = knn(grasp_views_trans_, grasp_views_, k=1).squeeze() - 1
+            view_inds = knn(grasp_views_trans_, grasp_views_, k=1).squeeze()
             grasp_views_rot_trans = torch.index_select(grasp_views_rot_trans, 0, view_inds)  # (V, 3, 3)
             grasp_views_rot_trans = grasp_views_rot_trans.unsqueeze(0).expand(num_grasp_points, -1, -1,
                                                                               -1)  # (Np, V, 3, 3)
@@ -72,7 +72,7 @@ def process_grasp_labels(end_points):
         # compute nearest neighbors
         seed_xyz_ = seed_xyz.transpose(0, 1).contiguous().unsqueeze(0)  # (1, 3, Ns)
         grasp_points_merged_ = grasp_points_merged.transpose(0, 1).contiguous().unsqueeze(0)  # (1, 3, Np')
-        nn_inds = knn(grasp_points_merged_, seed_xyz_, k=1).squeeze() - 1  # (Ns)
+        nn_inds = knn(grasp_points_merged_, seed_xyz_, k=1).squeeze()  # (Ns)
 
         # assign anchor points to real points
         grasp_points_merged = torch.index_select(grasp_points_merged, 0, nn_inds)  # (Ns, 3)
@@ -99,8 +99,8 @@ def process_grasp_labels(end_points):
     batch_grasp_view_graspness = torch.sum(torch.sum(batch_grasp_view_valid, dim=-1), dim=-1) / view_grasp_num  # (B, Ns, V)
     view_graspness_min, _ = torch.min(batch_grasp_view_graspness, dim=-1)  # (B, Ns)
     view_graspness_max, _ = torch.max(batch_grasp_view_graspness, dim=-1)
-    view_graspness_max = view_graspness_max.unsqueeze(-1).expand(-1, -1, 300)  # (B, Ns, V)
-    view_graspness_min = view_graspness_min.unsqueeze(-1).expand(-1, -1, 300)  # same shape as batch_grasp_view_graspness
+    view_graspness_max = view_graspness_max.unsqueeze(-1).expand(-1, -1, V)  # (B, Ns, V)
+    view_graspness_min = view_graspness_min.unsqueeze(-1).expand(-1, -1,V)  # same shape as batch_grasp_view_graspness
     batch_grasp_view_graspness = (batch_grasp_view_graspness - view_graspness_min) / (view_graspness_max - view_graspness_min + 1e-5)
 
     # process scores

@@ -17,7 +17,7 @@ from models.backbone_resunet14 import SPconvUNet14D
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
 from label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
-from pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
+from pointnet_replacement.pointnet2_utils import furthest_point_sample, gather_operation
 
 
 class GraspNet(nn.Module):
@@ -37,21 +37,58 @@ class GraspNet(nn.Module):
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth)
 
     def forward(self, end_points):
-        seed_xyz = end_points['point_clouds']  # use all sampled point cloud, B*Ns*3
-        B, point_num, _ = seed_xyz.shape  # batch _size
-        # point-wise features
-        coordinates_batch = end_points['coors']
-        print(coordinates_batch[:5]) # TODO: remove
-        features_batch = end_points['feats']
-        coords_i32 = coordinates_batch.int()
-        sparse_input = spconv.SparseConvTensor( #TODO here I replaced the Minkowski logic and I need to verify that it works
-            features_batch,          
-            coords_i32,
-            (coords_i32[:, 1:].amax(dim=0) + 1).tolist(),   # TODO [X, Y, Z] if coords are (b, x, y, z),           
-            B              
+        # ----------- Here we process the data to make it fit into the spconv tensor TODO: Double check this for validty and try to put more of the preprocessing in the data processing part
+        # Also think about trade of of offsetting per batch vs per sample vs whole dataset
+        seed_xyz = end_points['point_clouds']              
+        B, point_num, _ = seed_xyz.shape
+
+        coords = end_points['coors'].to(dtype=torch.int32)  # (N, 4)
+        feats  = end_points['feats'] # (N, Cin)
+
+        mins = coords[:, 1:].amin(dim=0)          # (3,) [min_x, min_y, min_z]
+        maxs = coords[:, 1:].amax(dim=0)          # (3,) [max_x, max_y, max_z]
+
+        #print(f"Mins: {mins}, Maxs: {maxs}")
+
+        extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
+        spatial_shape_zyx = (
+            int(extent[2].item()),  # Z
+            int(extent[1].item()),  # Y
+            int(extent[0].item()),  # X
+            )
+
+        # Reorder to spconv layout: [b, x, y, z] TODO: Check if this is correct
+        coords_bzyx = torch.stack(
+            (coords[:, 0], coords[:, 3], coords[:, 2], coords[:, 1]),
+            dim=1
+        ).contiguous().to(torch.int32)
+
+
+        sparse_input = spconv.SparseConvTensor(
+            feats,                 # (N, Cin)
+            coords_bzyx,           # (N, 4) [z,y,x,b], int32
+            spatial_shape_zyx,
+            B                      # batch size
         )
+        
+
         seed_features = self.backbone(sparse_input).features
         seed_features = seed_features[end_points['quantize2original']].view(B, point_num, -1).transpose(1, 2)
+
+        """# --- DEBUG: Backbone output analysis ---
+        with torch.no_grad():
+            mean_val = seed_features.mean().item()
+            std_val = seed_features.std().item()
+            min_val = seed_features.min().item()
+            max_val = seed_features.max().item()
+            print(f"[DEBUG] Backbone output stats:")
+            print(f"  Shape: {tuple(seed_features.shape)}")
+            print(f"  Mean: {mean_val:.6f}, Std: {std_val:.6f}")
+            print(f"  Min: {min_val:.6f}, Max: {max_val:.6f}")
+            # Optional: visualize histogram for one batch
+            if torch.isnan(seed_features).any():
+                print("  WARNING: NaNs detected in backbone features!")
+        # --- END DEBUG ---"""
 
         end_points = self.graspable(seed_features, end_points)
         seed_features_flipped = seed_features.transpose(1, 2)  # B*Ns*feat_dim
@@ -62,24 +99,78 @@ class GraspNet(nn.Module):
         graspness_mask = graspness_score > GRASPNESS_THRESHOLD
         graspable_mask = objectness_mask & graspness_mask
 
+        """#dummy code to get good mask TODO: Fix this, our backbone model seems to produce outputs with lower magnitude and therefore the MLP layer assign low scores and therefore our mask has to few points
+        graspable_mask = torch.zeros_like(objectness_mask, dtype=torch.bool)
+        min_needed = self.M_points
+        for i in range(B):
+            # choose at least M_points per sample (or as many as available)
+            k = min(point_num, max(min_needed, point_num // 2))  # pick a sensible number
+            sel = torch.randperm(point_num, device=graspable_mask.device)[:k]
+            graspable_mask[i, sel] = True"""
+
         seed_features_graspable = []
         seed_xyz_graspable = []
         graspable_num_batch = 0.
-        for i in range(B):
+
+        """# --- DEBUG START ---
+        # Masks
+        print("\n=== DEBUG: Graspable selection block ===")
+        print(f"seed_features: {seed_features.shape}")  # (B, feat_dim, Ns)
+        print(f"seed_features_flipped: {seed_features_flipped.shape}")  # (B, Ns, feat_dim) — double-check
+
+        # Scores
+        print(f"objectness_score: {objectness_score.shape} (min={objectness_score.min():.3f}, max={objectness_score.max():.3f})")
+        print(f"graspness_score: {graspness_score.shape} (min={graspness_score.min():.3f}, max={graspness_score.max():.3f})")
+
+        # Masks
+        print(f"objectness_pred: {objectness_pred.shape}, unique={objectness_pred.unique(return_counts=True)}")
+        print(f"objectness_mask: {objectness_mask.shape}, num_true={objectness_mask.sum().item()}")
+        print(f"graspness_mask: {graspness_mask.shape}, num_true={graspness_mask.sum().item()}")
+        print(f"graspable_mask: {graspable_mask.shape}, num_true={graspable_mask.sum().item()}")
+
+        # --- DEBUG END ---"""
+
+        for i in range(B):#  TODO: think about why we need to iterate over the batches and not parallelize this
+
+            # Filter out unlikely graspable points
             cur_mask = graspable_mask[i]
             graspable_num_batch += cur_mask.sum()
             cur_feat = seed_features_flipped[i][cur_mask]  # Ns*feat_dim
             cur_seed_xyz = seed_xyz[i][cur_mask]  # Ns*3
-
+            Ns = cur_seed_xyz.shape[0]
+            #print(f"Graspable num for batch {i}: {cur_mask.sum().item()}")
+            #print(F"Ns: {Ns}")
+           
+            #perform FPS to get fixed number of points
             cur_seed_xyz = cur_seed_xyz.unsqueeze(0) # 1*Ns*3
-            fps_idxs = furthest_point_sample(cur_seed_xyz, self.M_points)
-            cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # 1*3*Ns
-            cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # Ns*3
-            cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns
-            cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # feat_dim*Ns
+            
+            # Handle case where we have fewer graspable points than M_points
+            num_to_sample = min(Ns, self.M_points)
+            
+            if num_to_sample > 0:
+                fps_idxs = furthest_point_sample(cur_seed_xyz, num_to_sample)
+                cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # 1*3*Ns
+                cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # num_to_sample*3
+                cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns
+                cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # feat_dim*num_to_sample
+            else:
+                # No graspable points - use zeros (this sample will likely be ignored in loss)
+                cur_seed_xyz = torch.zeros((0, 3), device=cur_seed_xyz.device, dtype=cur_seed_xyz.dtype)
+                cur_feat = torch.zeros((cur_feat.shape[0], 0), device=cur_feat.device, dtype=cur_feat.dtype)
+            
+            # Pad to M_points if necessary
+            if num_to_sample < self.M_points:
+                pad_num = self.M_points - num_to_sample
+                # Pad xyz with zeros (or repeat last point if you prefer)
+                xyz_pad = torch.zeros((pad_num, 3), device=cur_seed_xyz.device, dtype=cur_seed_xyz.dtype)
+                cur_seed_xyz = torch.cat([cur_seed_xyz, xyz_pad], dim=0)
+                # Pad features with zeros
+                feat_pad = torch.zeros((cur_feat.shape[0], pad_num), device=cur_feat.device, dtype=cur_feat.dtype)
+                cur_feat = torch.cat([cur_feat, feat_pad], dim=1)
 
             seed_features_graspable.append(cur_feat)
             seed_xyz_graspable.append(cur_seed_xyz)
+
         seed_xyz_graspable = torch.stack(seed_xyz_graspable, 0)  # B*Ns*3
         seed_features_graspable = torch.stack(seed_features_graspable)  # B*feat_dim*Ns
         end_points['xyz_graspable'] = seed_xyz_graspable
@@ -89,6 +180,11 @@ class GraspNet(nn.Module):
         seed_features_graspable = seed_features_graspable + res_feat
 
         if self.is_training:
+            inds = end_points['grasp_top_view_inds']
+            assert inds.dtype == torch.long, inds.dtype
+            assert inds.min().item() >= 0, inds.min().item()
+            assert inds.max().item() < self.num_view, (inds.max().item(), self.num_view)
+
             end_points = process_grasp_labels(end_points)
             grasp_top_views_rot, end_points = match_grasp_view_and_label(end_points)
         else:

@@ -21,11 +21,23 @@ def compute_objectness_loss(end_points):
     end_points['loss/stage1_objectness_loss'] = loss
 
     objectness_pred = torch.argmax(objectness_score, 1)
-    end_points['stage1_objectness_acc'] = (objectness_pred == objectness_label.long()).float().mean()
-    end_points['stage1_objectness_prec'] = (objectness_pred == objectness_label.long())[
-        objectness_pred == 1].float().mean()
-    end_points['stage1_objectness_recall'] = (objectness_pred == objectness_label.long())[
-        objectness_label == 1].float().mean()
+    acc = (objectness_pred == objectness_label.long()).float()
+    end_points['stage1_objectness_acc'] = acc.mean()
+    
+    # Precision: of predicted positives, how many are correct
+    pred_pos = (objectness_pred == 1)
+    if pred_pos.sum() > 0:
+        end_points['stage1_objectness_prec'] = acc[pred_pos].mean()
+    else:
+        end_points['stage1_objectness_prec'] = torch.tensor(0.0, device=acc.device, dtype=acc.dtype)
+    
+    # Recall: of actual positives, how many did we predict correctly
+    label_pos = (objectness_label == 1)
+    if label_pos.sum() > 0:
+        end_points['stage1_objectness_recall'] = acc[label_pos].mean()
+    else:
+        end_points['stage1_objectness_recall'] = torch.tensor(0.0, device=acc.device, dtype=acc.dtype)
+    
     return loss, end_points
 
 
@@ -36,13 +48,21 @@ def compute_graspness_loss(end_points):
     loss_mask = end_points['objectness_label'].bool()
     loss = criterion(graspness_score, graspness_label)
     loss = loss[loss_mask]
-    loss = loss.mean()
     
-    graspness_score_c = graspness_score.detach().clone()[loss_mask]
-    graspness_label_c = graspness_label.detach().clone()[loss_mask]
-    graspness_score_c = torch.clamp(graspness_score_c, 0., 0.99)
-    graspness_label_c = torch.clamp(graspness_label_c, 0., 0.99)
-    rank_error = (torch.abs(torch.trunc(graspness_score_c * 20) - torch.trunc(graspness_label_c * 20)) / 20.).mean()
+    if loss.numel() > 0:
+        loss = loss.mean()
+    else:
+        loss = torch.tensor(0.0, device=graspness_score.device, dtype=graspness_score.dtype)
+    
+    if loss_mask.sum() > 0:
+        graspness_score_c = graspness_score.detach().clone()[loss_mask]
+        graspness_label_c = graspness_label.detach().clone()[loss_mask]
+        graspness_score_c = torch.clamp(graspness_score_c, 0., 0.99)
+        graspness_label_c = torch.clamp(graspness_label_c, 0., 0.99)
+        rank_error = (torch.abs(torch.trunc(graspness_score_c * 20) - torch.trunc(graspness_label_c * 20)) / 20.).mean()
+    else:
+        rank_error = torch.tensor(0.0, device=graspness_score.device, dtype=graspness_score.dtype)
+    
     end_points['stage1_graspness_acc_rank_error'] = rank_error
 
     end_points['loss/stage1_graspness_loss'] = loss
@@ -75,6 +95,11 @@ def compute_width_loss(end_points):
     loss = criterion(grasp_width_pred, grasp_width_label)
     grasp_score_label = end_points['batch_grasp_score']
     loss_mask = grasp_score_label > 0
-    loss = loss[loss_mask].mean()
+    
+    if loss_mask.sum() > 0:
+        loss = loss[loss_mask].mean()
+    else:
+        loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
+    
     end_points['loss/stage3_width_loss'] = loss
     return loss, end_points

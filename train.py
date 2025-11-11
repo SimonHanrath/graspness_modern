@@ -17,7 +17,7 @@ sys.path.append(os.path.join(ROOT_DIR, 'dataset'))
 
 from models.graspnet import GraspNet
 from models.loss import get_loss
-from dataset.graspnet_dataset import GraspNetDataset, minkowski_collate_fn, load_grasp_labels
+from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels
 
 from tqdm import tqdm
 
@@ -63,12 +63,14 @@ TRAIN_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, ca
                                 remove_outlier=True, augment=True, load_label=True)
 print('train dataset length: ', len(TRAIN_DATASET))
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=minkowski_collate_fn)
+                              num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
+
+
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
 start_epoch = 0
@@ -109,6 +111,7 @@ def train_one_epoch():
                 batch_data_label[key] = batch_data_label[key].to(device)
 
         end_points = net(batch_data_label)
+        
         loss, end_points = get_loss(end_points)
         loss.backward()
         optimizer.step()

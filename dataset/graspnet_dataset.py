@@ -11,8 +11,7 @@ import torch
 import collections.abc as container_abcs
 from torch.utils.data import Dataset
 from tqdm import tqdm
-import MinkowskiEngine as ME
-from data_utils import CameraInfo, transform_point_cloud, create_point_cloud_from_depth_image, get_workspace_mask
+from utils.data_utils import CameraInfo, transform_point_cloud, create_point_cloud_from_depth_image, get_workspace_mask
 
 
 class GraspNetDataset(Dataset):
@@ -32,7 +31,7 @@ class GraspNetDataset(Dataset):
 
         # TODO: hardcoded quick fix to account for my toy dataset with 10 scenes
         if split == 'train':
-            self.sceneIds = list(range(1, 10))  # here I changed to 1 from 100
+            self.sceneIds = list(range(1, 2))  # here I changed to 1 from 100
         elif split == 'test':
             self.sceneIds = list(range(8, 10))
         elif split == 'test_seen':
@@ -137,6 +136,12 @@ class GraspNetDataset(Dataset):
             idxs = np.concatenate([idxs1, idxs2], axis=0)
         cloud_sampled = cloud_masked[idxs]
 
+        #TODO: double check this part
+
+        # Shift so all coords are >= 0
+        offset = -cloud_sampled.min(axis=0)  # [3,]
+        cloud_sampled = cloud_sampled + offset
+
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
                     'feats': np.ones_like(cloud_sampled).astype(np.float32),
@@ -212,6 +217,11 @@ class GraspNetDataset(Dataset):
         if self.augment:
             cloud_sampled, object_poses_list = self.augment_data(cloud_sampled, object_poses_list)
 
+        # TODO: double check this part
+        # Shift so all coords are >= 0
+        offset = -cloud_sampled.min(axis=0)  # [3,]
+        cloud_sampled = cloud_sampled + offset
+
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
                     'feats': np.ones_like(cloud_sampled).astype(np.float32),
@@ -235,29 +245,58 @@ def load_grasp_labels(root):
     return grasp_labels
 
 
-def minkowski_collate_fn(list_data):
-    coordinates_batch, features_batch = ME.utils.sparse_collate([d["coors"] for d in list_data],
-                                                                [d["feats"] for d in list_data])
-    coordinates_batch = np.ascontiguousarray(coordinates_batch, dtype=np.int32)
-    coordinates_batch, features_batch, _, quantize2original = ME.utils.sparse_quantize(
-        coordinates_batch, features_batch, return_index=True, return_inverse=True)
+def spconv_collate_fn(list_data): # TODO need to test this
+
+    coords_list = []
+    feats_list = []
+    for b, d in enumerate(list_data):
+        c = d["coors"]
+        f = d["feats"]
+
+        if not torch.is_tensor(c):
+            c = torch.as_tensor(c)
+        if not torch.is_tensor(f):
+            f = torch.as_tensor(f, dtype=torch.float32)
+
+        c = c.int()  
+        bcol = torch.full((c.shape[0], 1), b, dtype=torch.int32, device=c.device)
+        coords_list.append(torch.cat([bcol, c], dim=1))  
+        feats_list.append(f)
+
+    coordinates_batch = torch.cat(coords_list, dim=0).contiguous()         
+    features_batch    = torch.cat(feats_list,  dim=0).contiguous().float() 
+
+    unique_coords, inverse = torch.unique(coordinates_batch, dim=0, return_inverse=True)
+
+    num_unique = unique_coords.size(0)
+    C = features_batch.size(1)
+    voxel_feats = torch.zeros(num_unique, C, dtype=features_batch.dtype, device=features_batch.device)
+    voxel_feats.index_add_(0, inverse, features_batch)
+    counts = torch.bincount(inverse, minlength=num_unique).clamp_min_(1).unsqueeze(1).to(voxel_feats.dtype)
+    voxel_feats = voxel_feats / counts
+
     res = {
-        "coors": coordinates_batch,
-        "feats": features_batch,
-        "quantize2original": quantize2original
+        "coors": unique_coords,          
+        "feats": voxel_feats,           
+        "quantize2original": inverse,    
     }
 
     def collate_fn_(batch):
+        if isinstance(batch[0], torch.Tensor):
+            return torch.stack(batch, 0)
         if type(batch[0]).__module__ == 'numpy':
             return torch.stack([torch.from_numpy(b) for b in batch], 0)
         elif isinstance(batch[0], container_abcs.Sequence):
-            return [[torch.from_numpy(sample) for sample in b] for b in batch]
+            return [[(torch.from_numpy(sample) if type(sample).__module__ == 'numpy' else sample)
+                     for sample in b] for b in batch]
         elif isinstance(batch[0], container_abcs.Mapping):
             for key in batch[0]:
-                if key == 'coors' or key == 'feats':
+                if key in ('coors', 'feats'):
                     continue
                 res[key] = collate_fn_([d[key] for d in batch])
             return res
-    res = collate_fn_(list_data)
+        else:
+            return batch
 
+    res = collate_fn_(list_data)
     return res

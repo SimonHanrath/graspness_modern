@@ -79,41 +79,48 @@ class SPconvUNetBase(ResNetBase):
     def network_initialization(self, in_channels, out_channels, D):
         self.inplanes = self.INIT_DIM
         self.conv0p1s1 = spconv.SubMConv3d(
-            in_channels, self.inplanes, kernel_size=5, stride=1, padding=2,
+            in_channels, self.inplanes, kernel_size=5, stride=1, padding=2, bias=False,
             indice_key="subm_p1"
         )
         self.bn0 = nn.BatchNorm1d(self.inplanes)
 
         self.conv1p1s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p2"
         )
         self.bn1 = nn.BatchNorm1d(self.inplanes)
         self.block1 = self._make_layer(self.BLOCK, self.PLANES[0], self.LAYERS[0], indice_key_prefix="subm_p2")
 
         self.conv2p2s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p4"
         )
         self.bn2 = nn.BatchNorm1d(self.inplanes)
         self.block2 = self._make_layer(self.BLOCK, self.PLANES[1], self.LAYERS[1], indice_key_prefix="subm_p4")
 
         self.conv3p4s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p8"
         )
         self.bn3 = nn.BatchNorm1d(self.inplanes)
         self.block3 = self._make_layer(self.BLOCK, self.PLANES[2], self.LAYERS[2], indice_key_prefix="subm_p8")
 
-        self.conv4p8s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2,
+        self.conv4p8s2 = spconv.SparseConv3d( #TODO: this leads to problems if we do not have enough points per voxel as we downsample to ahrd, so I replace it for now
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p16"
         )
+
+        """self.conv4p8s2 = spconv.SubMConv3d(
+            self.inplanes, self.inplanes, kernel_size=3, stride=1, padding=1,
+            indice_key="subm_p8_bottleneck"
+        )"""
+
+
         self.bn4 = nn.BatchNorm1d(self.inplanes)
         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3], self.LAYERS[3], indice_key_prefix="subm_p16")
 
         self.convtr4p16s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[4], kernel_size=2,
+            self.inplanes, self.PLANES[4], kernel_size=2, bias=False,
             indice_key="enc_p16"
         )
         self.bntr4 = nn.BatchNorm1d(self.PLANES[4])
@@ -122,7 +129,7 @@ class SPconvUNetBase(ResNetBase):
         self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="subm_p8")
 
         self.convtr5p8s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[5], kernel_size=2,
+            self.inplanes, self.PLANES[5], kernel_size=2, bias=False,
             indice_key="enc_p8"
         )
         self.bntr5 = nn.BatchNorm1d(self.PLANES[5])
@@ -131,7 +138,7 @@ class SPconvUNetBase(ResNetBase):
         self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="subm_p4")
 
         self.convtr6p4s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[6], kernel_size=2,
+            self.inplanes, self.PLANES[6], kernel_size=2, bias=False,
             indice_key="enc_p4"
         )
         self.bntr6 = nn.BatchNorm1d(self.PLANES[6])
@@ -140,7 +147,7 @@ class SPconvUNetBase(ResNetBase):
         self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="subm_p2")
 
         self.convtr7p2s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[7], kernel_size=2,
+            self.inplanes, self.PLANES[7], kernel_size=2, bias=False,
             indice_key="enc_p2"
         )
         self.bntr7 = nn.BatchNorm1d(self.PLANES[7])
@@ -210,6 +217,9 @@ class SPconvUNetBase(ResNetBase):
 
         out = sparse_cat(out, out_p1)
         out = self.block8(out)
+        out = self.final(out)                                  
+        #out = out.replace_feature(self.relu(out.features))
+        
         return out
 
 
