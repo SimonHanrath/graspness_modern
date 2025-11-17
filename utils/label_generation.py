@@ -28,6 +28,11 @@ def process_grasp_labels(end_points):
     for i in range(batch_size):
         seed_xyz = seed_xyzs[i]  # (Ns, 3)
         poses = end_points['object_poses_list'][i]  # [(3, 4),]
+        
+        # Get the offset that was applied to the point cloud
+        # seed_xyz is in shifted space, but grasp_points are in camera coordinates
+        # We need to apply the same offset to grasp_points for correct matching
+        cloud_offset = end_points['cloud_offset'][i]  # (3,)
 
         # get merged grasp points for label computation
         grasp_points_merged = []
@@ -43,6 +48,9 @@ def process_grasp_labels(end_points):
             # generate and transform template grasp views
             grasp_views = generate_grasp_views(V).to(pose.device)  # (V, 3)
             grasp_points_trans = transform_point_cloud(grasp_points, pose, '3x4')
+            # Apply the same offset that was applied to the point cloud
+            # This ensures grasp_points_trans is in the same coordinate system as seed_xyz
+            grasp_points_trans = grasp_points_trans + cloud_offset.unsqueeze(0)
             grasp_views_trans = transform_point_cloud(grasp_views, pose[:3, :3], '3x3')
             # generate and transform template grasp view rotation
             angles = torch.zeros(grasp_views.size(0), dtype=grasp_views.dtype, device=grasp_views.device)

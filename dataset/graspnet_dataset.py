@@ -31,15 +31,17 @@ class GraspNetDataset(Dataset):
 
         # TODO: hardcoded quick fix to account for my toy dataset with 10 scenes
         if split == 'train':
-            self.sceneIds = list(range(1, 2))  # here I changed to 1 from 100
+            self.sceneIds = list(range(1, 7))  # scenes 1-6 for training
+        elif split == 'val':
+            self.sceneIds = list(range(7, 9))  # scenes 7-8 for validation
         elif split == 'test':
-            self.sceneIds = list(range(8, 10))
+            self.sceneIds = list(range(10, 11))
         elif split == 'test_seen':
-            self.sceneIds = list(range(100, 130))
+            self.sceneIds = list(range(10, 11))
         elif split == 'test_similar':
-            self.sceneIds = list(range(130, 160))
+            self.sceneIds = list(range(10, 11))
         elif split == 'test_novel':
-            self.sceneIds = list(range(160, 190))
+            self.sceneIds = list(range(10, 11))
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
@@ -145,6 +147,7 @@ class GraspNetDataset(Dataset):
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
                     'feats': np.ones_like(cloud_sampled).astype(np.float32),
+                    'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
                     }
         return ret_dict
 
@@ -225,6 +228,7 @@ class GraspNetDataset(Dataset):
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
                     'feats': np.ones_like(cloud_sampled).astype(np.float32),
+                    'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
                     'graspness_label': graspness_sampled.astype(np.float32),
                     'objectness_label': objectness_label.astype(np.int64),
                     'object_poses_list': object_poses_list,
@@ -245,7 +249,20 @@ def load_grasp_labels(root):
     return grasp_labels
 
 
-def spconv_collate_fn(list_data): # TODO need to test this
+def spconv_collate_fn(list_data):
+    """
+    Collate function for spconv that mimics MinkowskiEngine's sparse_quantize behavior.
+    
+    Key steps:
+    1. Concatenate all point coordinates and features from the batch
+    2. Find unique voxel coordinates using torch.unique()
+    3. Create quantize2original mapping (like ME.utils.sparse_quantize)
+    4. Average features for points that map to the same voxel
+    
+    This ensures that:
+    - Multiple points in the same voxel get averaged features (proper voxelization)
+    - We can map voxel features back to original points using quantize2original
+    """
 
     coords_list = []
     feats_list = []
@@ -266,19 +283,27 @@ def spconv_collate_fn(list_data): # TODO need to test this
     coordinates_batch = torch.cat(coords_list, dim=0).contiguous()         
     features_batch    = torch.cat(feats_list,  dim=0).contiguous().float() 
 
-    unique_coords, inverse = torch.unique(coordinates_batch, dim=0, return_inverse=True)
-
-    num_unique = unique_coords.size(0)
-    C = features_batch.size(1)
-    voxel_feats = torch.zeros(num_unique, C, dtype=features_batch.dtype, device=features_batch.device)
-    voxel_feats.index_add_(0, inverse, features_batch)
-    counts = torch.bincount(inverse, minlength=num_unique).clamp_min_(1).unsqueeze(1).to(voxel_feats.dtype)
-    voxel_feats = voxel_feats / counts
-
+    # Create quantize2original mapping: for each original point, which voxel does it map to?
+    # Multiple points can map to the same voxel
+    # We need to find unique voxel coordinates and create the mapping
+    unique_coords, quantize2original = torch.unique(coordinates_batch, dim=0, return_inverse=True)
+    
+    # Average features for points that map to the same voxel
+    num_unique = unique_coords.shape[0]
+    voxel_features = torch.zeros((num_unique, features_batch.shape[1]), 
+                                  dtype=features_batch.dtype, device=features_batch.device)
+    voxel_features.scatter_add_(0, quantize2original.unsqueeze(1).expand(-1, features_batch.shape[1]), 
+                                 features_batch)
+    
+    # Count how many points map to each voxel to compute average
+    counts = torch.zeros(num_unique, dtype=torch.float32, device=features_batch.device)
+    counts.scatter_add_(0, quantize2original, torch.ones_like(quantize2original, dtype=torch.float32))
+    voxel_features = voxel_features / counts.unsqueeze(1).clamp(min=1)
+    
     res = {
         "coors": unique_coords,          
-        "feats": voxel_feats,           
-        "quantize2original": inverse,    
+        "feats": voxel_features,
+        "quantize2original": quantize2original,
     }
 
     def collate_fn_(batch):

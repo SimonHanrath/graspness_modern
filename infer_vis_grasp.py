@@ -7,6 +7,10 @@ import time
 import scipy.io as scio
 import torch
 import open3d as o3d
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless environments
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from graspnetAPI.graspnet_eval import GraspGroup
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -76,9 +80,14 @@ def data_process():
         idxs = np.concatenate([idxs1, idxs2], axis=0)
     cloud_sampled = cloud_masked[idxs]
 
+    # Shift so all coords are >= 0 (CRITICAL: must match training preprocessing!)
+    offset = -cloud_sampled.min(axis=0)  # [3,]
+    cloud_sampled = cloud_sampled + offset
+
     ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                 'coors': cloud_sampled.astype(np.float32) / cfgs.voxel_size,
                 'feats': np.ones_like(cloud_sampled).astype(np.float32),
+                'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
                 }
     return ret_dict
 
@@ -116,6 +125,15 @@ def inference(data_input):
         grasp_preds = pred_decode(end_points)
 
     preds = grasp_preds[0].detach().cpu().numpy()
+    
+    # Transform grasp centers back to camera coordinates
+    # During data loading, point cloud was shifted by offset to make all coords >= 0
+    # Grasps are predicted in this shifted space, so we need to subtract the offset
+    # to get back to camera coordinates
+    if 'cloud_offset' in batch_data:
+        offset = batch_data['cloud_offset'][0].cpu().numpy()  # [3,]
+        # Grasp centers are in columns 13:16
+        preds[:, 13:16] = preds[:, 13:16] - offset
 
     # Filtering grasp poses for real-world execution. 
     # The first mask preserves the grasp poses that are within a 30-degree angle with the vertical pose and have a width of less than 9cm.
@@ -165,7 +183,72 @@ if __name__ == '__main__':
         grippers = gg.to_open3d_geometry_list()
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(pc.astype(np.float32))
-        o3d.visualization.draw_geometries([cloud, *grippers])
+        
+        # Save visualization to file instead of interactive display
+        vis_dir = os.path.join(cfgs.dump_dir, scene_id, cfgs.camera)
+        if not os.path.exists(vis_dir):
+            os.makedirs(vis_dir)
+        
+        # Option 1: Save point cloud and grasps separately
+        pcd_path = os.path.join(vis_dir, f'{cfgs.index}_cloud.ply')
+        o3d.io.write_point_cloud(pcd_path, cloud)
+        print(f"Point cloud saved to: {pcd_path}")
+        
+        # Option 2: Use matplotlib for visualization (works in headless environments)
+        print("Generating matplotlib-based visualization...")
+        try:
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            
+            # Plot point cloud (downsample for performance)
+            pc_sample = pc[::10]
+            ax.scatter(pc_sample[:, 0], pc_sample[:, 1], pc_sample[:, 2], 
+                      c='gray', marker='.', s=1, alpha=0.3, label='Point Cloud')
+            
+            # Plot grasp centers and orientations
+            num_grasps_to_show = min(10, len(gg))
+            for idx in range(num_grasps_to_show):
+                g = gg[idx]
+                center = g.translation
+                # Draw grasp center
+                ax.scatter(center[0], center[1], center[2], 
+                         c='red', marker='o', s=50, alpha=0.8)
+                # Draw approach direction
+                approach = g.rotation_matrix[:, 2] * 0.05  # 5cm arrow
+                ax.quiver(center[0], center[1], center[2],
+                         approach[0], approach[1], approach[2],
+                         color='blue', arrow_length_ratio=0.3, linewidth=2)
+            
+            ax.set_xlabel('X (m)')
+            ax.set_ylabel('Y (m)')
+            ax.set_zlabel('Z (m)')
+            ax.set_title(f'Grasp Visualization - Scene {cfgs.scene}, Frame {cfgs.index}\nTop {num_grasps_to_show} grasps shown')
+            ax.legend()
+            
+            # Set equal aspect ratio
+            max_range = np.array([pc[:, 0].max()-pc[:, 0].min(),
+                                 pc[:, 1].max()-pc[:, 1].min(),
+                                 pc[:, 2].max()-pc[:, 2].min()]).max() / 2.0
+            mid_x = (pc[:, 0].max()+pc[:, 0].min()) * 0.5
+            mid_y = (pc[:, 1].max()+pc[:, 1].min()) * 0.5
+            mid_z = (pc[:, 2].max()+pc[:, 2].min()) * 0.5
+            ax.set_xlim(mid_x - max_range, mid_x + max_range)
+            ax.set_ylim(mid_y - max_range, mid_y + max_range)
+            ax.set_zlim(mid_z - max_range, mid_z + max_range)
+            
+            # Save figure
+            fig_path = os.path.join(vis_dir, f'{cfgs.index}_visualization.png')
+            plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"Visualization saved to: {fig_path}")
+            print(f"Total grasps detected: {len(gg)}")
+        except Exception as e:
+            print(f"Matplotlib visualization failed: {e}")
+            print("Point cloud PLY file saved. View it with MeshLab, CloudCompare, or Open3D on a machine with display.")
+        
+        # Note: Open3D interactive visualization requires display (X11/OpenGL)
+        # To view interactively, run on a machine with display:
+        # o3d.visualization.draw_geometries([cloud, *grippers])
 
         # # Example code for execution
         # g = gg[0]

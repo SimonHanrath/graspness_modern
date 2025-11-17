@@ -37,43 +37,44 @@ class GraspNet(nn.Module):
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth)
 
     def forward(self, end_points):
-        # ----------- Here we process the data to make it fit into the spconv tensor TODO: Double check this for validty and try to put more of the preprocessing in the data processing part
-        # Also think about trade of of offsetting per batch vs per sample vs whole dataset
         seed_xyz = end_points['point_clouds']              
         B, point_num, _ = seed_xyz.shape
 
-        coords = end_points['coors'].to(dtype=torch.int32)  # (N, 4)
-        feats  = end_points['feats'] # (N, Cin)
+        coords = end_points['coors'].to(dtype=torch.int32)  # (M, 4) unique voxel coords in format [batch, x, y, z]
+        feats  = end_points['feats'] # (M, Cin) voxelized features
+        quantize2original = end_points['quantize2original']  # (N,) mapping from original points to voxels (N total points, values in [0, M))
 
+        # coords[:, 1:] are [x, y, z] coordinates
         mins = coords[:, 1:].amin(dim=0)          # (3,) [min_x, min_y, min_z]
         maxs = coords[:, 1:].amax(dim=0)          # (3,) [max_x, max_y, max_z]
 
-        #print(f"Mins: {mins}, Maxs: {maxs}")
-
         extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
-        spatial_shape_zyx = (
-            int(extent[2].item()),  # Z
-            int(extent[1].item()),  # Y
+        
+        # spconv expects spatial_shape in (X, Y, Z) order to match coords format [batch, x, y, z]
+        spatial_shape_xyz = (
             int(extent[0].item()),  # X
-            )
+            int(extent[1].item()),  # Y
+            int(extent[2].item()),  # Z
+        )
 
-        # Reorder to spconv layout: [b, x, y, z] TODO: Check if this is correct
-        coords_bzyx = torch.stack(
-            (coords[:, 0], coords[:, 3], coords[:, 2], coords[:, 1]),
-            dim=1
-        ).contiguous().to(torch.int32)
-
+        # coords is already in correct format [batch, x, y, z] - no reordering needed
+        coords_bxyz = coords.contiguous().to(torch.int32)
 
         sparse_input = spconv.SparseConvTensor(
-            feats,                 # (N, Cin)
-            coords_bzyx,           # (N, 4) [z,y,x,b], int32
-            spatial_shape_zyx,
+            feats,                 # (M, Cin) where M is unique voxels
+            coords_bxyz,           # (M, 4) [batch, x, y, z], int32
+            spatial_shape_xyz,     # (X, Y, Z)
             B                      # batch size
         )
         
-
-        seed_features = self.backbone(sparse_input).features
-        seed_features = seed_features[end_points['quantize2original']].view(B, point_num, -1).transpose(1, 2)
+        # spconv UNet will preserve voxel structure (same coordinates, different features)
+        sparse_output = self.backbone(sparse_input)
+        voxel_features = sparse_output.features  # (M, C) - same M voxels as input
+        
+        # Map voxel features back to original dense point cloud using quantize2original
+        # quantize2original[i] gives the voxel index for original point i
+        # This is the same approach as MinkowskiEngine
+        seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
 
         """# --- DEBUG: Backbone output analysis ---
         with torch.no_grad():
@@ -180,11 +181,6 @@ class GraspNet(nn.Module):
         seed_features_graspable = seed_features_graspable + res_feat
 
         if self.is_training:
-            inds = end_points['grasp_top_view_inds']
-            assert inds.dtype == torch.long, inds.dtype
-            assert inds.min().item() >= 0, inds.min().item()
-            assert inds.max().item() < self.num_view, (inds.max().item(), self.num_view)
-
             end_points = process_grasp_labels(end_points)
             grasp_top_views_rot, end_points = match_grasp_view_and_label(end_points)
         else:
