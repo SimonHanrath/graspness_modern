@@ -71,11 +71,13 @@ VAL_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, came
 print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                              num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
+                              persistent_workers=True)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=cfgs.batch_size, shuffle=False,
-                            num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                            num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
+                            persistent_workers=True)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
