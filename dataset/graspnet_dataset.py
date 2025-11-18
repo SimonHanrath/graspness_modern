@@ -29,19 +29,18 @@ class GraspNetDataset(Dataset):
         self.load_label = load_label
         self.collision_labels = {}
 
-        # TODO: hardcoded quick fix to account for my toy dataset with 10 scenes
         if split == 'train':
-            self.sceneIds = list(range(1, 7))  # scenes 1-6 for training
+            self.sceneIds = list(range(100))
         elif split == 'val':
-            self.sceneIds = list(range(7, 9))  # scenes 7-8 for validation
+            self.sceneIds = list(range(100, 110))
         elif split == 'test':
-            self.sceneIds = list(range(10, 11))
+            self.sceneIds = list(range(110, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(10, 11))
+            self.sceneIds = list(range(110, 130))
         elif split == 'test_similar':
-            self.sceneIds = list(range(10, 11))
+            self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':
-            self.sceneIds = list(range(10, 11))
+            self.sceneIds = list(range(160, 190))
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
