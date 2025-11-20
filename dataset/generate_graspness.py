@@ -6,7 +6,7 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 from utils.data_utils import get_workspace_mask, CameraInfo, create_point_cloud_from_depth_image
-from knn.knn_modules import knn
+from knn_replacement.knn_modules import knn
 import torch
 from graspnetAPI.utils.xmlhandler import xmlReader
 from graspnetAPI.utils.utils import get_obj_pose_list, transform_points
@@ -100,31 +100,36 @@ if __name__ == '__main__':
             grasp_points = np.vstack(grasp_points) if len(grasp_points) else np.zeros((0,3), dtype=np.float32)
             grasp_points_graspness = np.vstack(grasp_points_graspness) if len(grasp_points_graspness) else np.zeros((0,1), dtype=np.float32)
 
-            # ---- speed-safe block (no autograd, chunked KNN) ----
-            with torch.no_grad():
-                # to GPU (original code used .cuda(); we keep that for parity)
-                grasp_points_t = torch.from_numpy(grasp_points).cuda()
-                grasp_points_graspness_t = torch.from_numpy(grasp_points_graspness).cuda()
-                grasp_points_t = grasp_points_t.transpose(0, 1).contiguous().unsqueeze(0)
+            masked_points_num = cloud_masked.shape[0]
+            cloud_masked_graspness = np.zeros((masked_points_num, 1), dtype=np.float32)
 
-                masked_points_num = cloud_masked.shape[0]
-                cloud_masked_graspness = np.zeros((masked_points_num, 1), dtype=np.float32)
+            # Skip KNN if no grasp points available (empty scene or no valid objects)
+            if grasp_points.shape[0] > 0:
+                # ---- speed-safe block (no autograd, chunked KNN) ----
+                with torch.no_grad():
+                    # to GPU (original code used .cuda(); we keep that for parity)
+                    grasp_points_t = torch.from_numpy(grasp_points).cuda()
+                    grasp_points_graspness_t = torch.from_numpy(grasp_points_graspness).cuda()
+                    grasp_points_t = grasp_points_t.transpose(0, 1).contiguous().unsqueeze(0)
 
-                CHUNK = int(cfgs.chunk)
-                part_num = int(masked_points_num / CHUNK)
-                for i in range(1, part_num + 2):   # lack of cuda memory
-                    if i == part_num + 1:
-                        cloud_masked_partial = cloud_masked[CHUNK * part_num:]
-                        if len(cloud_masked_partial) == 0:
-                            break
-                    else:
-                        cloud_masked_partial = cloud_masked[CHUNK * (i - 1):(i * CHUNK)]
-                    cloud_masked_partial_t = torch.from_numpy(cloud_masked_partial).cuda()
-                    cloud_masked_partial_t = cloud_masked_partial_t.transpose(0, 1).contiguous().unsqueeze(0)
-                    nn_inds = knn(grasp_points_t, cloud_masked_partial_t, k=1).squeeze() - 1
-                    cloud_masked_graspness[CHUNK * (i - 1):(i * CHUNK)] = torch.index_select(
-                        grasp_points_graspness_t, 0, nn_inds).cpu().numpy()
-            # -----------------------------------------------------
+                    CHUNK = int(cfgs.chunk)
+                    part_num = int(masked_points_num / CHUNK)
+                    for i in range(1, part_num + 2):   # lack of cuda memory
+                        if i == part_num + 1:
+                            cloud_masked_partial = cloud_masked[CHUNK * part_num:]
+                            if len(cloud_masked_partial) == 0:
+                                break
+                        else:
+                            cloud_masked_partial = cloud_masked[CHUNK * (i - 1):(i * CHUNK)]
+                        cloud_masked_partial_t = torch.from_numpy(cloud_masked_partial).cuda()
+                        cloud_masked_partial_t = cloud_masked_partial_t.transpose(0, 1).contiguous().unsqueeze(0)
+                        # knn returns (B, k, Q), we need (Q,) for k=1
+                        nn_inds = knn(grasp_points_t, cloud_masked_partial_t, k=1).squeeze(0).squeeze(0)
+                        # Clamp indices to valid range as safety measure
+                        nn_inds = torch.clamp(nn_inds, 0, grasp_points_graspness_t.shape[0] - 1)
+                        cloud_masked_graspness[CHUNK * (i - 1):(i * CHUNK)] = torch.index_select(
+                            grasp_points_graspness_t, 0, nn_inds).cpu().numpy()
+                # -----------------------------------------------------
 
             max_graspness = np.max(cloud_masked_graspness) if cloud_masked_graspness.size else 1.0
             min_graspness = np.min(cloud_masked_graspness) if cloud_masked_graspness.size else 0.0

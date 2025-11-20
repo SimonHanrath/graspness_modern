@@ -32,6 +32,9 @@ parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size 
 parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 18]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
+parser.add_argument('--num_workers', type=int, default=12, help='Number of dataloader workers [default: 12]')
+parser.add_argument('--grad_accumulation_steps', type=int, default=1, help='Gradient accumulation steps [default: 1]')
+parser.add_argument('--use_amp', action='store_true', default=False, help='Use automatic mixed precision training')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
 parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
@@ -71,13 +74,13 @@ VAL_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, came
 print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
-                              persistent_workers=True)
+                              num_workers=cfgs.num_workers, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, 
+                              pin_memory=True, persistent_workers=True, prefetch_factor=2)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=cfgs.batch_size, shuffle=False,
-                            num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
-                            persistent_workers=True)
+                            num_workers=cfgs.num_workers, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, 
+                            pin_memory=True, persistent_workers=True, prefetch_factor=2)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
@@ -87,6 +90,10 @@ net.to(device)
 
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
+
+# Create gradient scaler for mixed precision training
+scaler = torch.cuda.amp.GradScaler(enabled=cfgs.use_amp)
+
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
@@ -116,7 +123,8 @@ def train_one_epoch():
     epoch_stat_dict = {}  # collect epoch-level statistics
     adjust_learning_rate(optimizer, EPOCH_CNT)
     net.train()
-    batch_interval = 20
+    batch_interval = 50  # Reduced logging frequency to minimize overhead
+    
     for batch_idx, batch_data_label in tqdm(enumerate(TRAIN_DATALOADER), desc='Training'):
         for key in batch_data_label:
             if 'list' in key:
@@ -126,12 +134,20 @@ def train_one_epoch():
             else:
                 batch_data_label[key] = batch_data_label[key].to(device)
 
-        end_points = net(batch_data_label)
+        # Use automatic mixed precision if enabled
+        with torch.cuda.amp.autocast(enabled=cfgs.use_amp):
+            end_points = net(batch_data_label)
+            loss, end_points = get_loss(end_points)
+            loss = loss / cfgs.grad_accumulation_steps  # Scale loss for gradient accumulation
         
-        loss, end_points = get_loss(end_points)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
+        
+        # Update weights only after accumulating gradients
+        if (batch_idx + 1) % cfgs.grad_accumulation_steps == 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
 
         for key in end_points:
             if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -175,9 +191,10 @@ def validate_one_epoch():
                 else:
                     batch_data_label[key] = batch_data_label[key].to(device)
 
-            end_points = net(batch_data_label)
-            
-            loss, end_points = get_loss(end_points)
+            # Use AMP for validation too
+            with torch.cuda.amp.autocast(enabled=cfgs.use_amp):
+                end_points = net(batch_data_label)
+                loss, end_points = get_loss(end_points)
 
             for key in end_points:
                 if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
