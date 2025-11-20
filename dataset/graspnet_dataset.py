@@ -28,10 +28,6 @@ class GraspNetDataset(Dataset):
         self.augment = augment
         self.load_label = load_label
         self.collision_labels = {}
-        
-        # Cache for frequently loaded files to avoid repeated disk I/O
-        self.camera_poses_cache = {}
-        self.align_mat_cache = {}
 
         if split == 'train':
             self.sceneIds = list(range(100))
@@ -177,13 +173,8 @@ class GraspNetDataset(Dataset):
         # get valid points
         depth_mask = (depth > 0)
         if self.remove_outlier:
-            # Use cached camera poses and alignment matrix
-            if scene not in self.camera_poses_cache:
-                self.camera_poses_cache[scene] = np.load(os.path.join(self.root, 'scenes', scene, self.camera, 'camera_poses.npy'))
-                self.align_mat_cache[scene] = np.load(os.path.join(self.root, 'scenes', scene, self.camera, 'cam0_wrt_table.npy'))
-            
-            camera_poses = self.camera_poses_cache[scene]
-            align_mat = self.align_mat_cache[scene]
+            camera_poses = np.load(os.path.join(self.root, 'scenes', scene, self.camera, 'camera_poses.npy'))
+            align_mat = np.load(os.path.join(self.root, 'scenes', scene, self.camera, 'cam0_wrt_table.npy'))
             trans = np.dot(align_mat, camera_poses[self.frameid[index]])
             workspace_mask = get_workspace_mask(cloud, seg, trans=trans, organized=True, outlier=0.02)
             mask = (depth_mask & workspace_mask)

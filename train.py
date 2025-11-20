@@ -32,7 +32,7 @@ parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size 
 parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 18]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
-parser.add_argument('--num_workers', type=int, default=12, help='Number of dataloader workers [default: 12]')
+parser.add_argument('--num_workers', type=int, default=8, help='Number of dataloader workers [default: 8]')
 parser.add_argument('--grad_accumulation_steps', type=int, default=1, help='Gradient accumulation steps [default: 1]')
 parser.add_argument('--use_amp', action='store_true', default=False, help='Use automatic mixed precision training')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
@@ -75,12 +75,12 @@ print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
                               num_workers=cfgs.num_workers, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, 
-                              pin_memory=True, persistent_workers=True, prefetch_factor=2)
+                              pin_memory=True, persistent_workers=(cfgs.num_workers > 0), prefetch_factor=2 if cfgs.num_workers > 0 else None)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=cfgs.batch_size, shuffle=False,
                             num_workers=cfgs.num_workers, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, 
-                            pin_memory=True, persistent_workers=True, prefetch_factor=2)
+                            pin_memory=True, persistent_workers=(cfgs.num_workers > 0), prefetch_factor=2 if cfgs.num_workers > 0 else None)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
@@ -92,7 +92,7 @@ net.to(device)
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
 
 # Create gradient scaler for mixed precision training
-scaler = torch.cuda.amp.GradScaler(enabled=cfgs.use_amp)
+scaler = torch.amp.GradScaler('cuda', enabled=cfgs.use_amp)
 
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
