@@ -107,9 +107,6 @@ if cfgs.use_compile:
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
 
-# Initialize GradScaler for Automatic Mixed Precision
-scaler = torch.amp.GradScaler('cuda')
-
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
@@ -150,15 +147,11 @@ def train_one_epoch():
             else:
                 batch_data_label[key] = batch_data_label[key].to(device)
 
-        # Use automatic mixed precision if enabled
-        with torch.amp.autocast('cuda'):
-            end_points = net(batch_data_label)
-            loss, end_points = get_loss(end_points)
+        end_points = net(batch_data_label)
+        loss, end_points = get_loss(end_points)
         
-        # Backward pass with gradient scaling
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
         optimizer.zero_grad()
         
         # Periodic cache clearing to prevent memory fragmentation
@@ -207,10 +200,8 @@ def validate_one_epoch():
                 else:
                     batch_data_label[key] = batch_data_label[key].to(device)
 
-            # Use automatic mixed precision if enabled
-            with torch.amp.autocast('cuda'):
-                end_points = net(batch_data_label)
-                loss, end_points = get_loss(end_points)
+            end_points = net(batch_data_label)
+            loss, end_points = get_loss(end_points)
 
             for key in end_points:
                 if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -273,7 +264,6 @@ def train(start_epoch):
             save_dict = {'epoch': epoch + 1, 
                         'optimizer_state_dict': optimizer.state_dict(),
                         'model_state_dict': net.state_dict(),
-                        'scaler_state_dict': scaler.state_dict(),
                         'val_loss': val_loss,
                         'train_loss': train_loss}
             torch.save(save_dict, best_save_path)
@@ -281,7 +271,7 @@ def train(start_epoch):
 
         # Save regular checkpoint
         save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
-                     'model_state_dict': net.state_dict(), 'scaler_state_dict': scaler.state_dict()}
+                     'model_state_dict': net.state_dict()}
         torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model_name + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
 
 

@@ -28,6 +28,12 @@ def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
     ref_bnc   = ref.transpose(1, 2).contiguous()
     query_bqc = query.transpose(1, 2).contiguous()
 
+    # Ensure both tensors have the same dtype for pytorch3d knn_points
+    # This is needed when using AMP (Automatic Mixed Precision)
+    if ref_bnc.dtype != query_bqc.dtype:
+        # Cast both to float32 to ensure compatibility
+        ref_bnc = ref_bnc.float()
+        query_bqc = query_bqc.float()
 
     knn = knn_points(query_bqc, ref_bnc, K=min(k, N),
                      lengths1=lengths_query, lengths2=lengths_ref)
