@@ -71,13 +71,11 @@ VAL_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, came
 print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
-                              persistent_workers=True)
+                              num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=1, shuffle=False,
-                            num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
-                            persistent_workers=True)
+                            num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
@@ -184,9 +182,6 @@ def validate_one_epoch():
                     if key not in stat_dict:
                         stat_dict[key] = 0
                     stat_dict[key] += end_points[key].item()
-            
-            # Clear references to free memory
-            del end_points, loss
     
     # Calculate averages and log to TensorBoard
     num_batches = len(VAL_DATALOADER)
