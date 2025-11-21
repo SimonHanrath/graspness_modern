@@ -75,7 +75,7 @@ TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle
                               persistent_workers=True)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
-VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=cfgs.batch_size, shuffle=False,
+VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=1, shuffle=False,
                             num_workers=4, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn, pin_memory=True,
                             persistent_workers=True)
 print('validation dataloader length: ', len(VAL_DATALOADER))
@@ -184,6 +184,9 @@ def validate_one_epoch():
                     if key not in stat_dict:
                         stat_dict[key] = 0
                     stat_dict[key] += end_points[key].item()
+            
+            # Clear references to free memory
+            del end_points, loss
     
     # Calculate averages and log to TensorBoard
     num_batches = len(VAL_DATALOADER)
@@ -215,7 +218,7 @@ def train(start_epoch):
         # Reset numpy seed.
         # REF: https://github.com/pytorch/pytorch/issues/5059
         np.random.seed()
-        train_loss = train_one_epoch()
+        train_loss = 10#train_one_epoch()
         
         # Run validation
         log_string('\n---- Running Validation ----')
