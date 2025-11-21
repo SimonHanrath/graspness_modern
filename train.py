@@ -8,6 +8,19 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import torch.multiprocessing as mp
+
+# Set multiprocessing start method to avoid CUDA context issues with DataLoader workers
+# This must be done before any CUDA operations
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Already set
+
+# PyTorch 2.x backend optimizations
+torch.backends.cudnn.benchmark = True  # Enable cuDNN autotuner for consistent input shapes
+torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 on Ampere+ GPUs for faster matmul
+torch.backends.cudnn.allow_tf32 = True  # Allow TF32 for cuDNN operations
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(ROOT_DIR, 'utils'))
@@ -35,8 +48,10 @@ parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial 
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
 parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
+parser.add_argument('--use_compile', action='store_true', default=False, help='Use torch.compile for model optimization [PyTorch 2.0+]')
 cfgs = parser.parse_args()
-# ------------------------------------------------------------------------- GLOBAL CONFIG BEG
+
+
 EPOCH_CNT = 0
 CHECKPOINT_PATH = cfgs.checkpoint_path if cfgs.checkpoint_path is not None and cfgs.resume else None
 if not os.path.exists(cfgs.log_dir):
@@ -82,9 +97,19 @@ net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 
+# Apply torch.compile for graph optimization
+if cfgs.use_compile:
+    log_string("Compiling model with torch.compile (mode='default')...")
+    net = torch.compile(net, mode='default')
+    log_string("Model compilation enabled. First iteration will be slower.")
+
 
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
+
+# Initialize GradScaler for Automatic Mixed Precision
+scaler = torch.amp.GradScaler('cuda')
+
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
@@ -115,6 +140,7 @@ def train_one_epoch():
     adjust_learning_rate(optimizer, EPOCH_CNT)
     net.train()
     batch_interval = 20
+    
     for batch_idx, batch_data_label in tqdm(enumerate(TRAIN_DATALOADER), desc='Training'):
         for key in batch_data_label:
             if 'list' in key:
@@ -124,12 +150,20 @@ def train_one_epoch():
             else:
                 batch_data_label[key] = batch_data_label[key].to(device)
 
-        end_points = net(batch_data_label)
+        # Use automatic mixed precision if enabled
+        with torch.amp.autocast('cuda'):
+            end_points = net(batch_data_label)
+            loss, end_points = get_loss(end_points)
         
-        loss, end_points = get_loss(end_points)
-        loss.backward()
-        optimizer.step()
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad()
+        
+        # Periodic cache clearing to prevent memory fragmentation
+        if (batch_idx + 1) % 100 == 0:
+            torch.cuda.empty_cache()
 
         for key in end_points:
             if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -173,9 +207,10 @@ def validate_one_epoch():
                 else:
                     batch_data_label[key] = batch_data_label[key].to(device)
 
-            end_points = net(batch_data_label)
-            
-            loss, end_points = get_loss(end_points)
+            # Use automatic mixed precision if enabled
+            with torch.amp.autocast('cuda'):
+                end_points = net(batch_data_label)
+                loss, end_points = get_loss(end_points)
 
             for key in end_points:
                 if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -238,6 +273,7 @@ def train(start_epoch):
             save_dict = {'epoch': epoch + 1, 
                         'optimizer_state_dict': optimizer.state_dict(),
                         'model_state_dict': net.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
                         'val_loss': val_loss,
                         'train_loss': train_loss}
             torch.save(save_dict, best_save_path)
@@ -245,7 +281,7 @@ def train(start_epoch):
 
         # Save regular checkpoint
         save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
-                     'model_state_dict': net.state_dict()}
+                     'model_state_dict': net.state_dict(), 'scaler_state_dict': scaler.state_dict()}
         torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model_name + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
 
 
