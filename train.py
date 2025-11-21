@@ -218,7 +218,7 @@ def train(start_epoch):
         # Reset numpy seed.
         # REF: https://github.com/pytorch/pytorch/issues/5059
         np.random.seed()
-        train_loss = 10#train_one_epoch()
+        train_loss = train_one_epoch()
         
         # Run validation
         log_string('\n---- Running Validation ----')
