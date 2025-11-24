@@ -138,7 +138,19 @@ def train_one_epoch():
     net.train()
     batch_interval = 20
     
+    # TEST: Start from batch 8000 to test the spatial shape fix
+    START_BATCH = 8000
+    END_BATCH = 8400
+    
     for batch_idx, batch_data_label in tqdm(enumerate(TRAIN_DATALOADER), desc='Training'):
+        # Skip batches before START_BATCH
+        if batch_idx < START_BATCH:
+            continue
+        # Stop after END_BATCH
+        if batch_idx >= END_BATCH:
+            print(f"\n✓ Successfully tested batches {START_BATCH} to {END_BATCH-1}")
+            break
+            
         for key in batch_data_label:
             if 'list' in key:
                 for i in range(len(batch_data_label[key])):

@@ -37,7 +37,7 @@ class ApproachNet(nn.Module): # Probabilistic view selection
 
     def forward(self, seed_features, end_points):
         B, _, num_seed = seed_features.size()
-        res_features = F.relu(self.conv1(seed_features), inplace=True)
+        res_features = F.relu(self.conv1(seed_features))
         features = self.conv2(res_features)
         view_score = features.transpose(1, 2).contiguous() # (B, num_seed, num_view)
         end_points['view_score'] = view_score
@@ -105,7 +105,7 @@ class SWADNet(nn.Module): # Grasp pose predicition head
 
     def forward(self, vp_features, end_points):
         B, _, num_seed = vp_features.size()
-        vp_features = F.relu(self.conv1(vp_features), inplace=True)
+        vp_features = F.relu(self.conv1(vp_features))
         vp_features = self.conv_swad(vp_features)
         vp_features = vp_features.view(B, 2, self.num_angle, self.num_depth, num_seed)
         vp_features = vp_features.permute(0, 1, 4, 2, 3)

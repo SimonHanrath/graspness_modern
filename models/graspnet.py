@@ -45,16 +45,27 @@ class GraspNet(nn.Module):
         quantize2original = end_points['quantize2original']  # (N,) mapping from original points to voxels (N total points, values in [0, M))
 
         # coords[:, 1:] are [x, y, z] coordinates
+        # Note: coordinates are already normalized per-sample in the dataset (shifted to start from 0)
+        # but we need to normalize batch-level for proper spatial shape calculation
         mins = coords[:, 1:].amin(dim=0)          # (3,) [min_x, min_y, min_z]
         maxs = coords[:, 1:].amax(dim=0)          # (3,) [max_x, max_y, max_z]
 
+        # Normalize coordinates to start from 0 at batch level
+        # (this handles edge cases where min might not be exactly 0 due to batching)
+        coords[:, 1:] = coords[:, 1:] - mins.unsqueeze(0)
+        
         extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
+        
+        # Ensure minimum spatial shape to handle 4 stride-2 layers (downsample by 16x)
+        # Without this, flat point clouds (e.g., Z=1) would cause "spatial shape reach zero" error
+        # Minimum dimension after 4 stride-2 layers: 16 -> 8 -> 4 -> 2 -> 1
+        MIN_SPATIAL_DIM = 16
         
         # spconv expects spatial_shape in (X, Y, Z) order to match coords format [batch, x, y, z]
         spatial_shape_xyz = (
-            int(extent[0].item()),  # X
-            int(extent[1].item()),  # Y
-            int(extent[2].item()),  # Z
+            max(int(extent[0].item()), MIN_SPATIAL_DIM),  # X
+            max(int(extent[1].item()), MIN_SPATIAL_DIM),  # Y
+            max(int(extent[2].item()), MIN_SPATIAL_DIM),  # Z
         )
 
         # coords is already in correct format [batch, x, y, z] - no reordering needed
