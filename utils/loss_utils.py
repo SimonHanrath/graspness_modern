@@ -91,7 +91,7 @@ def batch_viewpoint_params_to_matrix(batch_towards, batch_angle):
     axis_y[mask_y, 1] = 1
     axis_x = axis_x / torch.norm(axis_x, dim=-1, keepdim=True)
     axis_y = axis_y / torch.norm(axis_y, dim=-1, keepdim=True)
-    axis_z = torch.cross(axis_x, axis_y)
+    axis_z = torch.linalg.cross(axis_x, axis_y)
     sin = torch.sin(batch_angle)
     cos = torch.cos(batch_angle)
     R1 = torch.stack([ones, zeros, zeros, zeros, cos, -sin, zeros, sin, cos], dim=-1)

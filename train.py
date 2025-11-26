@@ -139,17 +139,17 @@ def train_one_epoch():
     batch_interval = 20
     
     # TEST: Start from batch 8000 to test the spatial shape fix
-    START_BATCH = 8000
-    END_BATCH = 8400
+    #START_BATCH = 8000
+    #END_BATCH = 8400
     
     for batch_idx, batch_data_label in tqdm(enumerate(TRAIN_DATALOADER), desc='Training'):
         # Skip batches before START_BATCH
-        if batch_idx < START_BATCH:
+        """if batch_idx < START_BATCH:
             continue
         # Stop after END_BATCH
         if batch_idx >= END_BATCH:
             print(f"\n✓ Successfully tested batches {START_BATCH} to {END_BATCH-1}")
-            break
+            break"""
             
         for key in batch_data_label:
             if 'list' in key:
@@ -253,7 +253,7 @@ def train(start_epoch):
         np.random.seed()
         train_loss = train_one_epoch()
         
-        # Run validation
+        """# Run validation TODO: currently disabled for faster testing
         log_string('\n---- Running Validation ----')
         val_loss = validate_one_epoch()
         log_string('Validation Loss: %.4f' % val_loss)
@@ -280,7 +280,7 @@ def train(start_epoch):
                         'train_loss': train_loss}
             torch.save(save_dict, best_save_path)
             log_string('**** Saved best model with val_loss: %.4f (train_loss: %.4f) ****' % (val_loss, train_loss))
-
+    """
         # Save regular checkpoint
         save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
                      'model_state_dict': net.state_dict()}

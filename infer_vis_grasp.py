@@ -35,6 +35,7 @@ parser.add_argument('--collision_thresh', type=float, default=-1,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--vis', action='store_true', default=False)
+parser.add_argument('--use_compile', action='store_true', default=False, help='Use torch.compile for inference optimization [PyTorch 2.0+]')
 parser.add_argument('--scene', type=str, default='0188')
 parser.add_argument('--index', type=str, default='0000')
 cfgs = parser.parse_args()
@@ -99,6 +100,11 @@ def my_worker_init_fn(worker_id):
 
 
 def inference(data_input):
+    # Enable backend optimizations
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    
     batch_data = spconv_collate_fn([data_input])
     net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=False)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -110,6 +116,13 @@ def inference(data_input):
     print("-> loaded checkpoint %s (epoch: %d)" % (cfgs.checkpoint_path, start_epoch))
 
     net.eval()
+    
+    # Apply torch.compile for inference optimization (PyTorch 2.0+)
+    if cfgs.use_compile:
+        print("Compiling model with torch.compile (mode='reduce-overhead')...")
+        net = torch.compile(net, mode='reduce-overhead')  # 'reduce-overhead' optimizes for repeated inference
+        print("Model compilation enabled.")
+    
     tic = time.time()
 
     for key in batch_data:
@@ -119,22 +132,40 @@ def inference(data_input):
                     batch_data[key][i][j] = batch_data[key][i][j].to(device)
         else:
             batch_data[key] = batch_data[key].to(device)
-    # Forward pass
-    with torch.no_grad():
+    # Forward pass - use inference_mode for better performance than no_grad
+    with torch.inference_mode():
         end_points = net(batch_data)
+        
+        # Debug: Check xyz_graspable coordinates
+        if 'xyz_graspable' in end_points:
+            xyz_grasp = end_points['xyz_graspable'][0].cpu().numpy()
+            print(f"\n=== DEBUG: xyz_graspable (before pred_decode) ===")
+            print(f"Range: X=[{xyz_grasp[:, 0].min():.3f}, {xyz_grasp[:, 0].max():.3f}], "
+                  f"Y=[{xyz_grasp[:, 1].min():.3f}, {xyz_grasp[:, 1].max():.3f}], "
+                  f"Z=[{xyz_grasp[:, 2].min():.3f}, {xyz_grasp[:, 2].max():.3f}]")
+        
         grasp_preds = pred_decode(end_points)
 
     preds = grasp_preds[0].detach().cpu().numpy()
     
-    # Transform grasp centers back to camera coordinates
-    # During data loading, point cloud was shifted by offset to make all coords >= 0
-    # Grasps are predicted in this shifted space, so we need to subtract the offset
-    # to get back to camera coordinates
+    # Debug: Check decoded predictions
+    print(f"=== DEBUG: Decoded predictions ===")
+    print(f"Grasp centers (col 13:16) range: X=[{preds[:, 13].min():.3f}, {preds[:, 13].max():.3f}], "
+          f"Y=[{preds[:, 14].min():.3f}, {preds[:, 14].max():.3f}], "
+          f"Z=[{preds[:, 15].min():.3f}, {preds[:, 15].max():.3f}]")
+    print("=====================================\n")
+    
+    # NOTE: Grasps are predicted in the shifted coordinate space (all coords >= 0)
+    # For visualization, we keep them in the same space as the point cloud
+    # For real-world execution, you would need to transform back to camera coords
+    # by subtracting the offset: preds[:, 13:16] = preds[:, 13:16] - offset
+    
+    # Store offset for potential later use
     if 'cloud_offset' in batch_data:
         offset = batch_data['cloud_offset'][0].cpu().numpy()  # [3,]
-        # Grasp centers are in columns 13:16
-        preds[:, 13:16] = preds[:, 13:16] - offset
-
+        # Save offset with grasps for downstream processing
+        # (not applied here to match visualization coordinate frame)
+    
     # Filtering grasp poses for real-world execution. 
     # The first mask preserves the grasp poses that are within a 30-degree angle with the vertical pose and have a width of less than 9cm.
     # mask = (preds[:,10] > 0.9) & (preds[:,1] < 0.09)
@@ -160,6 +191,14 @@ def inference(data_input):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     gg.save_npy(save_path)
+    
+    # Also save offset for coordinate transformation back to camera frame
+    offset_path = os.path.join(save_dir, cfgs.index + '_offset.npy')
+    if 'cloud_offset' in batch_data:
+        np.save(offset_path, batch_data['cloud_offset'][0].cpu().numpy())
+        print(f"Saved offset to: {offset_path}")
+        print(f"NOTE: Grasps are in shifted coordinates (all >= 0).")
+        print(f"      To transform to camera coordinates: grasp_center -= offset")
 
     toc = time.time()
     print('inference time: %fs' % (toc - tic))
@@ -176,10 +215,27 @@ if __name__ == '__main__':
         pc = data_dict['point_clouds']
         gg = np.load(os.path.join(cfgs.dump_dir, scene_id, cfgs.camera, cfgs.index + '.npy'))
         gg = GraspGroup(gg)
+        
+        # Debug: Print coordinate ranges
+        print(f"\n=== Coordinate Debug Info ===")
+        print(f"Point cloud range: X=[{pc[:, 0].min():.3f}, {pc[:, 0].max():.3f}], "
+              f"Y=[{pc[:, 1].min():.3f}, {pc[:, 1].max():.3f}], "
+              f"Z=[{pc[:, 2].min():.3f}, {pc[:, 2].max():.3f}]")
+        if len(gg) > 0:
+            grasp_centers = np.array([g.translation for g in gg])
+            print(f"Grasp centers range: X=[{grasp_centers[:, 0].min():.3f}, {grasp_centers[:, 0].max():.3f}], "
+                  f"Y=[{grasp_centers[:, 1].min():.3f}, {grasp_centers[:, 1].max():.3f}], "
+                  f"Z=[{grasp_centers[:, 2].min():.3f}, {grasp_centers[:, 2].max():.3f}]")
+            print(f"Total grasps before NMS: {len(gg)}")
+        
         gg = gg.nms()
         gg = gg.sort_by_score()
+        print(f"Total grasps after NMS: {len(gg)}")
         if gg.__len__() > 30:
             gg = gg[:30]
+        print(f"Showing top {len(gg)} grasps")
+        print("=============================\n")
+        
         grippers = gg.to_open3d_geometry_list()
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(pc.astype(np.float32))

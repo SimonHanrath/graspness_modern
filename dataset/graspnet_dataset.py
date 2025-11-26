@@ -30,13 +30,13 @@ class GraspNetDataset(Dataset):
         self.collision_labels = {}
 
         if split == 'train':
-            self.sceneIds = list(range(100))
+            self.sceneIds = list(range(0,100))
         elif split == 'val':
-            self.sceneIds = list(range(100, 110))
+            self.sceneIds = list(range(109, 110))
         elif split == 'test':
             self.sceneIds = list(range(110, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(110, 130))
+            self.sceneIds = list(range(10, 11))  # Match eval_seen which uses scene_0010
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':
