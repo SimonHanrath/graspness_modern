@@ -6,6 +6,7 @@ import os
 import numpy as np
 import scipy.io as scio
 from PIL import Image
+from functools import lru_cache
 
 import torch
 import collections.abc as container_abcs
@@ -27,7 +28,11 @@ class GraspNetDataset(Dataset):
         self.camera = camera
         self.augment = augment
         self.load_label = load_label
-        self.collision_labels = {}
+        
+        # Cache for collision labels - use LRU cache with max size to limit memory
+        # This allows recently accessed scenes to stay in memory while releasing old ones
+        self._collision_cache = {}
+        self._collision_cache_maxsize = 5  # Keep at most 5 scenes in cache (~900MB)
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
@@ -49,7 +54,7 @@ class GraspNetDataset(Dataset):
         self.scenename = []
         self.frameid = []
         self.graspnesspath = []
-        for x in tqdm(self.sceneIds, desc='Loading data path and collision labels...'):
+        for x in tqdm(self.sceneIds, desc='Loading data paths...'):
             for img_num in range(256):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))
@@ -57,14 +62,39 @@ class GraspNetDataset(Dataset):
                 self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
-            if self.load_label:
-                collision_labels = np.load(os.path.join(root, 'collision_label', x.strip(), 'collision_labels.npz'))
-                self.collision_labels[x.strip()] = {}
-                for i in range(len(collision_labels)):
-                    self.collision_labels[x.strip()][i] = collision_labels['arr_{}'.format(i)]
+            # REMOVED: No longer loading all collision labels at initialization
+            # This prevents each DataLoader worker from holding 3GB+ of collision data in memory
 
     def scene_list(self):
         return self.scenename
+    
+    def _load_collision_labels(self, scene):
+        """
+        Lazy load collision labels for a specific scene on-demand.
+        Uses an LRU cache to keep recently accessed scenes in memory.
+        This prevents memory explosion with multiple DataLoader workers.
+        """
+        if scene in self._collision_cache:
+            return self._collision_cache[scene]
+        
+        # Load collision labels for this scene
+        collision_labels_path = os.path.join(self.root, 'collision_label', scene, 'collision_labels.npz')
+        collision_labels_npz = np.load(collision_labels_path)
+        
+        # Convert to dictionary format
+        collision_dict = {}
+        for i in range(len(collision_labels_npz)):
+            collision_dict[i] = collision_labels_npz['arr_{}'.format(i)]
+        
+        # Implement simple LRU: if cache is full, remove oldest entry
+        if len(self._collision_cache) >= self._collision_cache_maxsize:
+            # Remove the first (oldest) item
+            oldest_scene = next(iter(self._collision_cache))
+            del self._collision_cache[oldest_scene]
+        
+        # Add to cache
+        self._collision_cache[scene] = collision_dict
+        return collision_dict
 
     def __len__(self):
         return len(self.depthpath)
@@ -201,12 +231,16 @@ class GraspNetDataset(Dataset):
         grasp_points_list = []
         grasp_widths_list = []
         grasp_scores_list = []
+        
+        # Lazy load collision labels for this scene only when needed
+        collision_labels_scene = self._load_collision_labels(scene) if self.load_label else None
+        
         for i, obj_idx in enumerate(obj_idxs):
             if (seg_sampled == obj_idx).sum() < 50:
                 continue
             object_poses_list.append(poses[:, :, i])
             points, widths, scores = self.grasp_labels[obj_idx]
-            collision = self.collision_labels[scene][i]  # (Np, V, A, D)
+            collision = collision_labels_scene[i]  # (Np, V, A, D)
 
             idxs = np.random.choice(len(points), min(max(int(len(points) / 4), 300), len(points)), replace=False)
             grasp_points_list.append(points[idxs])
@@ -238,6 +272,13 @@ class GraspNetDataset(Dataset):
 
 
 def load_grasp_labels(root):
+    """
+    Load grasp labels for all objects.
+    NOTE: Returns ~21GB of data. This is loaded once in the main process 
+    and shared across workers via copy-on-write in fork mode, or needs to be 
+    passed to each worker in spawn mode. With lazy loading of collision labels,
+    this is now the main memory bottleneck.
+    """
     obj_names = list(range(1, 89))
     grasp_labels = {}
     for obj_name in tqdm(obj_names, desc='Loading grasping labels...'):
@@ -246,6 +287,38 @@ def load_grasp_labels(root):
                                   label['scores'].astype(np.float32))
 
     return grasp_labels
+
+
+def load_grasp_labels_lazy(root):
+    """
+    Alternative lazy loading for grasp labels.
+    Returns a lazy loader object instead of loading all labels upfront.
+    Use this if memory is extremely constrained.
+    """
+    class LazyGraspLabels:
+        def __init__(self, root):
+            self.root = root
+            self.cache = {}
+            self.cache_maxsize = 20  # Keep 20 objects in cache (~5GB)
+        
+        def __getitem__(self, obj_name):
+            if obj_name in self.cache:
+                return self.cache[obj_name]
+            
+            label = np.load(os.path.join(self.root, 'grasp_label_simplified', '{}_labels.npz'.format(str(obj_name - 1).zfill(3))))
+            result = (label['points'].astype(np.float32), 
+                     label['width'].astype(np.float32),
+                     label['scores'].astype(np.float32))
+            
+            # Simple LRU cache management
+            if len(self.cache) >= self.cache_maxsize:
+                oldest = next(iter(self.cache))
+                del self.cache[oldest]
+            
+            self.cache[obj_name] = result
+            return result
+    
+    return LazyGraspLabels(root)
 
 
 def spconv_collate_fn(list_data):
