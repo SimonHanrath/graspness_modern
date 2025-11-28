@@ -9,18 +9,16 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.multiprocessing as mp
+from torch.cuda.amp import GradScaler, autocast
 
 # Set multiprocessing start method to avoid CUDA context issues with DataLoader workers
-# This must be done before any CUDA operations
 try:
     mp.set_start_method('spawn', force=True)
 except RuntimeError:
     pass  # Already set
 
-# PyTorch 2.x backend optimizations
-torch.backends.cudnn.benchmark = True  # Enable cuDNN autotuner for consistent input shapes
-torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 on Ampere+ GPUs for faster matmul
-torch.backends.cudnn.allow_tf32 = True  # Allow TF32 for cuDNN operations
+torch.backends.cudnn.benchmark = True 
+torch.set_float32_matmul_precision("high")
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(ROOT_DIR, 'utils'))
@@ -49,6 +47,11 @@ parser.add_argument('--resume', action='store_true', default=False, help='Whethe
 parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
 parser.add_argument('--use_compile', action='store_true', default=False, help='Use torch.compile for model optimization [PyTorch 2.0+]')
+parser.add_argument('--use_amp', action='store_true', default=False,
+                    help='Use torch.cuda.amp for mixed-precision training')
+parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers [default: 0]')
+
+
 cfgs = parser.parse_args()
 
 
@@ -86,32 +89,53 @@ VAL_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, came
 print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                              num_workers=cfgs.num_workers, pin_memory=True, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=1, shuffle=False,
-                            num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                            num_workers=cfgs.num_workers, pin_memory=True, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 
-# Apply torch.compile for graph optimization
+# Apply torch.compile for graph optimization ((requires CUDA capability >= 7.0)
 if cfgs.use_compile:
-    log_string("Compiling model with torch.compile (mode='default')...")
-    net = torch.compile(net, mode='default')
-    log_string("Model compilation enabled. First iteration will be slower.")
+    if torch.cuda.is_available():
+        compute_capability = torch.cuda.get_device_capability(device)
+        cc_major, cc_minor = compute_capability
+        cc_value = cc_major + cc_minor * 0.1
+        
+        if cc_value >= 7.0:
+            log_string(f"Compiling model with torch.compile (GPU compute capability: {cc_major}.{cc_minor})...")
+            net = torch.compile(net, mode='default')
+            log_string("Model compilation enabled. First iteration will be slower.")
+        else:
+            gpu_name = torch.cuda.get_device_name(device)
+            log_string(f"WARNING: torch.compile disabled - {gpu_name} (compute capability {cc_major}.{cc_minor}) is not supported.")
+            log_string(f"         Triton compiler requires CUDA capability >= 7.0. Training will continue without compilation.")
+    else:
+        log_string("Compiling model with torch.compile (mode='default')...")
+        net = torch.compile(net, mode='default')
+        log_string("Model compilation enabled. First iteration will be slower.")
 
 
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
+
+# Initialize GradScaler for AMP (to prevent small gradients from underflowing to zero)
+scaler = GradScaler(enabled=cfgs.use_amp and device.type == 'cuda')
+if cfgs.use_amp:
+    log_string("Using Automatic Mixed Precision (AMP) training")
 
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
     net.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if 'scaler_state_dict' in checkpoint and cfgs.use_amp:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
     start_epoch = checkpoint['epoch']
     log_string("-> loaded checkpoint %s (epoch: %d)" % (CHECKPOINT_PATH, start_epoch))
 # TensorBoard Visualizers
@@ -159,16 +183,20 @@ def train_one_epoch():
             else:
                 batch_data_label[key] = batch_data_label[key].to(device)
 
-        end_points = net(batch_data_label)
-        loss, end_points = get_loss(end_points)
+        # Forward pass with autocast for mixed precision
+        with autocast(enabled=cfgs.use_amp):
+            end_points = net(batch_data_label)
+            loss, end_points = get_loss(end_points)
         
-        loss.backward()
-        optimizer.step()
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad()
         
-        # Periodic cache clearing to prevent memory fragmentation
+        """# Periodic cache clearing to prevent memory fragmentation
         if (batch_idx + 1) % 100 == 0:
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()"""
 
         for key in end_points:
             if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -202,7 +230,7 @@ def validate_one_epoch():
     stat_dict = {}  # collect statistics
     net.eval()
     
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch_idx, batch_data_label in tqdm(enumerate(VAL_DATALOADER), desc='Validating'):
             for key in batch_data_label:
                 if 'list' in key:
@@ -212,8 +240,10 @@ def validate_one_epoch():
                 else:
                     batch_data_label[key] = batch_data_label[key].to(device)
 
-            end_points = net(batch_data_label)
-            loss, end_points = get_loss(end_points)
+            # Use autocast for validation as well
+            with autocast(enabled=cfgs.use_amp):
+                end_points = net(batch_data_label)
+                loss, end_points = get_loss(end_points)
 
             for key in end_points:
                 if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -283,7 +313,8 @@ def train(start_epoch):
     """
         # Save regular checkpoint
         save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
-                     'model_state_dict': net.state_dict()}
+                     'model_state_dict': net.state_dict(),
+                     'scaler_state_dict': scaler.state_dict()}
         torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model_name + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
 
 
