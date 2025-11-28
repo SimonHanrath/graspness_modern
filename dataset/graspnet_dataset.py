@@ -27,10 +27,11 @@ class GraspNetDataset(Dataset):
         self.camera = camera
         self.augment = augment
         self.load_label = load_label
-        self.collision_labels = {}
+        self.collision_labels = {}  # Cache for loaded collision labels (lazy loading)
+        self._collis0ion_label_paths = {}  # Store paths instead of data
 
         if split == 'train':
-            self.sceneIds = list(range(0,1))
+            self.sceneIds = list(range(0,100))
         elif split == 'val':
             self.sceneIds = list(range(109, 110))
         elif split == 'test':
@@ -49,7 +50,7 @@ class GraspNetDataset(Dataset):
         self.scenename = []
         self.frameid = []
         self.graspnesspath = []
-        for x in tqdm(self.sceneIds, desc='Loading data path and collision labels...'):
+        for x in tqdm(self.sceneIds, desc='Loading data paths...'):
             for img_num in range(256):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))
@@ -58,13 +59,20 @@ class GraspNetDataset(Dataset):
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
             if self.load_label:
-                collision_labels = np.load(os.path.join(root, 'collision_label', x.strip(), 'collision_labels.npz'))
-                self.collision_labels[x.strip()] = {}
-                for i in range(len(collision_labels)):
-                    self.collision_labels[x.strip()][i] = collision_labels['arr_{}'.format(i)]
+                # Store path instead of loading data - lazy loading on __getitem__
+                self._collision_label_paths[x.strip()] = os.path.join(root, 'collision_label', x.strip(), 'collision_labels.npz')
 
     def scene_list(self):
         return self.scenename
+    
+    def _load_collision_labels(self, scene):
+        """Lazy load collision labels for a scene when needed."""
+        if scene not in self.collision_labels:
+            collision_label_file = np.load(self._collision_label_paths[scene])
+            self.collision_labels[scene] = {}
+            for i in range(len(collision_label_file)):
+                self.collision_labels[scene][i] = collision_label_file['arr_{}'.format(i)]
+        return self.collision_labels[scene]
 
     def __len__(self):
         return len(self.depthpath)
@@ -201,12 +209,16 @@ class GraspNetDataset(Dataset):
         grasp_points_list = []
         grasp_widths_list = []
         grasp_scores_list = []
+        
+        # Lazy load collision labels for this scene
+        collision_labels_scene = self._load_collision_labels(scene)
+        
         for i, obj_idx in enumerate(obj_idxs):
             if (seg_sampled == obj_idx).sum() < 50:
                 continue
             object_poses_list.append(poses[:, :, i])
             points, widths, scores = self.grasp_labels[obj_idx]
-            collision = self.collision_labels[scene][i]  # (Np, V, A, D)
+            collision = collision_labels_scene[i]  # (Np, V, A, D)
 
             idxs = np.random.choice(len(points), min(max(int(len(points) / 4), 300), len(points)), replace=False)
             grasp_points_list.append(points[idxs])
