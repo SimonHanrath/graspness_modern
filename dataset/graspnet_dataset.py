@@ -15,6 +15,34 @@ from tqdm import tqdm
 from utils.data_utils import CameraInfo, transform_point_cloud, create_point_cloud_from_depth_image, get_workspace_mask
 
 
+class LazyGraspLabels:
+    """
+    Lazy loader for grasp labels with LRU caching.
+    Can be pickled for multiprocessing (unlike nested classes).
+    """
+    def __init__(self, root):
+        self.root = root
+        self.cache = {}
+        self.cache_maxsize = 20  # Keep 20 objects in cache (~5GB)
+    
+    def __getitem__(self, obj_name):
+        if obj_name in self.cache:
+            return self.cache[obj_name]
+        
+        label = np.load(os.path.join(self.root, 'grasp_label_simplified', '{}_labels.npz'.format(str(obj_name - 1).zfill(3))))
+        result = (label['points'].astype(np.float32), 
+                 label['width'].astype(np.float32),
+                 label['scores'].astype(np.float32))
+        
+        # Simple LRU cache management
+        if len(self.cache) >= self.cache_maxsize:
+            oldest = next(iter(self.cache))
+            del self.cache[oldest]
+        
+        self.cache[obj_name] = result
+        return result
+
+
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True):
@@ -35,7 +63,7 @@ class GraspNetDataset(Dataset):
         self._collision_cache_maxsize = 5  # Keep at most 5 scenes in cache (~900MB)
 
         if split == 'train':
-            self.sceneIds = list(range(0,100))
+            self.sceneIds = list(range(0,30))
         elif split == 'val':
             self.sceneIds = list(range(109, 110))
         elif split == 'test':
@@ -295,29 +323,6 @@ def load_grasp_labels_lazy(root):
     Returns a lazy loader object instead of loading all labels upfront.
     Use this if memory is extremely constrained.
     """
-    class LazyGraspLabels:
-        def __init__(self, root):
-            self.root = root
-            self.cache = {}
-            self.cache_maxsize = 20  # Keep 20 objects in cache (~5GB)
-        
-        def __getitem__(self, obj_name):
-            if obj_name in self.cache:
-                return self.cache[obj_name]
-            
-            label = np.load(os.path.join(self.root, 'grasp_label_simplified', '{}_labels.npz'.format(str(obj_name - 1).zfill(3))))
-            result = (label['points'].astype(np.float32), 
-                     label['width'].astype(np.float32),
-                     label['scores'].astype(np.float32))
-            
-            # Simple LRU cache management
-            if len(self.cache) >= self.cache_maxsize:
-                oldest = next(iter(self.cache))
-                del self.cache[oldest]
-            
-            self.cache[obj_name] = result
-            return result
-    
     return LazyGraspLabels(root)
 
 
