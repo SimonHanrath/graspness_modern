@@ -50,8 +50,6 @@ parser.add_argument('--use_compile', action='store_true', default=False, help='U
 parser.add_argument('--use_amp', action='store_true', default=False,
                     help='Use torch.cuda.amp for mixed-precision training')
 parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers [default: 0]')
-parser.add_argument('--persistent_workers', action='store_true', default=False, 
-                    help='Keep workers alive between epochs (reduces memory overhead with num_workers>0)')
 
 
 cfgs = parser.parse_args()
@@ -91,15 +89,11 @@ VAL_DATASET = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, came
 print('validation dataset length: ', len(VAL_DATASET))
 
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle=True,
-                              num_workers=cfgs.num_workers, pin_memory=True, 
-                              persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
-                              worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                              num_workers=cfgs.num_workers, pin_memory=True, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 VAL_DATALOADER = DataLoader(VAL_DATASET, batch_size=1, shuffle=False,
-                            num_workers=cfgs.num_workers, pin_memory=True,
-                            persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
-                            worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+                            num_workers=cfgs.num_workers, pin_memory=True, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
 print('validation dataloader length: ', len(VAL_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
