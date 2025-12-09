@@ -10,7 +10,7 @@ sys.path.append(ROOT_DIR)
 
 import pointnet_replacement.pytorch_utils as pt_utils
 from pointnet_replacement.pointnet2_utils import CylinderQueryAndGroup
-from loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
+from utils.loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
 
 
 class GraspableNet(nn.Module): # Objectness and Graspability MLP
@@ -25,52 +25,57 @@ class GraspableNet(nn.Module): # Objectness and Graspability MLP
         end_points['graspness_score'] = graspable_score[:, 2]
         return end_points
 
-
-class ApproachNet(nn.Module): # Probabilistic view selection
+class ApproachNet(nn.Module):  # Probabilistic view selection
     def __init__(self, num_view, seed_feature_dim, is_training=True):
         super().__init__()
         self.num_view = num_view
         self.in_dim = seed_feature_dim
-        self.is_training = is_training
+        self.is_training = is_training  # keep for now to avoid breaking other code
+
         self.conv1 = nn.Conv1d(self.in_dim, self.in_dim, 1)
         self.conv2 = nn.Conv1d(self.in_dim, self.num_view, 1)
+
+        # Precompute template views once and store as buffer (moves with .to(device))
+        template_views = generate_grasp_views(self.num_view)  # should return a torch.Tensor
+        self.register_buffer("template_views", template_views.float())
 
     def forward(self, seed_features, end_points):
         B, _, num_seed = seed_features.size()
         res_features = F.relu(self.conv1(seed_features))
         features = self.conv2(res_features)
-        view_score = features.transpose(1, 2).contiguous() # (B, num_seed, num_view)
+        view_score = features.transpose(1, 2).contiguous()  # (B, num_seed, num_view)
         end_points['view_score'] = view_score
 
         if self.is_training:
-            # normalize view graspness score to 0~1
-            view_score_ = view_score.clone().detach()
-            view_score_max, _ = torch.max(view_score_, dim=2)
-            view_score_min, _ = torch.min(view_score_, dim=2)
-            view_score_max = view_score_max.unsqueeze(-1).expand(-1, -1, self.num_view)
-            view_score_min = view_score_min.unsqueeze(-1).expand(-1, -1, self.num_view)
+            # normalize view graspness score to 0~1 (per seed)
+            view_score_ = view_score.detach()
+            view_score_max, _ = view_score_.max(dim=2, keepdim=True)  # (B, num_seed, 1)
+            view_score_min, _ = view_score_.min(dim=2, keepdim=True)  # (B, num_seed, 1)
             view_score_ = (view_score_ - view_score_min) / (view_score_max - view_score_min + 1e-8)
 
-            top_view_inds = []
-            for i in range(B):
-                top_view_inds_batch = torch.multinomial(view_score_[i], 1, replacement=False)
-                top_view_inds.append(top_view_inds_batch)
-            top_view_inds = torch.stack(top_view_inds, dim=0).squeeze(-1)  # B, num_seed
+            # view_score_ : (B, num_seed, num_view)
+            probs_flat = view_score_.view(-1, self.num_view)
+            top_view_inds_flat = torch.multinomial(probs_flat, 1, replacement=False)  # (B * num_seed, 1)
+            top_view_inds = top_view_inds_flat.view(B, num_seed)  # (B, num_seed)
         else:
-            _, top_view_inds = torch.max(view_score, dim=2)  # (B, num_seed)
+            _, top_view_inds = view_score.max(dim=2)  # (B, num_seed)
 
-            top_view_inds_ = top_view_inds.view(B, num_seed, 1, 1).expand(-1, -1, -1, 3).contiguous()
-            template_views = generate_grasp_views(self.num_view).to(features.device)  # (num_view, 3)
-            template_views = template_views.view(1, 1, self.num_view, 3).expand(B, num_seed, -1, -1).contiguous()
-            vp_xyz = torch.gather(template_views, 2, top_view_inds_).squeeze(2)  # (B, num_seed, 3)
+            template_views = self.template_views  # (num_view, 3)
+
+            top_view_inds_ = top_view_inds.view(B, num_seed, 1, 1).expand(-1, -1, 1, 3)
+            template_views_expand = template_views.view(1, 1, self.num_view, 3).expand(B, num_seed, -1, -1)
+            vp_xyz = torch.gather(template_views_expand, 2, top_view_inds_).squeeze(2)  # (B, num_seed, 3)
+
             vp_xyz_ = vp_xyz.view(-1, 3)
-            batch_angle = torch.zeros(vp_xyz_.size(0), dtype=vp_xyz.dtype, device=vp_xyz.device)
+            batch_angle = torch.zeros(vp_xyz_.size(0), dtype=vp_xyz_.dtype, device=vp_xyz_.device)
             vp_rot = batch_viewpoint_params_to_matrix(-vp_xyz_, batch_angle).view(B, num_seed, 3, 3)
+
             end_points['grasp_top_view_xyz'] = vp_xyz
             end_points['grasp_top_view_rot'] = vp_rot
 
         end_points['grasp_top_view_inds'] = top_view_inds
         return end_points, res_features
+
 
 
 class CloudCrop(nn.Module): # Cylinder Grouping

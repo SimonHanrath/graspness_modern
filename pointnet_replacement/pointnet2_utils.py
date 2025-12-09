@@ -17,8 +17,6 @@ import torch.nn as nn
 import pointnet_replacement.pytorch_utils as pt_utils
 import sys
 
-from pytorch3d.ops import sample_farthest_points, knn_points
-
 from typing import *
 
 
@@ -54,11 +52,25 @@ def furthest_point_sample(xyz, npoint) -> torch.Tensor:
     if not xyz.is_floating_point():
         xyz = xyz.float()
 
-    sampled_pts, sampled_idx = sample_farthest_points(
-        xyz, K=npoint, random_start_point=False
-    )
-
-    return sampled_idx  # (B, npoint)
+    B, N, C = xyz.shape
+    device = xyz.device
+    
+    # Initialize with first point (index 0)
+    centroids = torch.zeros(B, npoint, dtype=torch.long, device=device)
+    distance = torch.full((B, N), 1e10, dtype=xyz.dtype, device=device)
+    farthest = torch.zeros(B, dtype=torch.long, device=device)
+    batch_indices = torch.arange(B, dtype=torch.long, device=device)
+    
+    for i in range(npoint):
+        centroids[:, i] = farthest
+        centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
+        # Use more efficient squared distance computation
+        dist = ((xyz - centroid) ** 2).sum(-1)
+        # Update minimum distances
+        distance = torch.minimum(distance, dist)
+        farthest = distance.argmax(-1)
+    
+    return centroids  # (B, npoint)
 
 
 
@@ -79,6 +91,61 @@ def gather_operation(features: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
+    """
+    Pure PyTorch KNN implementation (replacement for pytorch3d.ops.knn_points)
+    Memory-efficient version using chunked processing for large point clouds
+    
+    Parameters
+    ----------
+    p1 : torch.Tensor
+        (B, N, D) query points
+    p2 : torch.Tensor
+        (B, M, D) reference points
+    K : int
+        number of nearest neighbors
+    
+    Returns
+    -------
+    dists : torch.Tensor
+        (B, N, K) squared distances
+    idx : torch.Tensor
+        (B, N, K) indices of neighbors in p2
+    """
+    B, N, D = p1.shape
+    M = p2.shape[1]
+    
+    # For small problems, use optimized torch.cdist
+    if N * M < 100000:  # Threshold to avoid OOM
+        p1_f = p1.float()
+        p2_f = p2.float()
+        
+        # torch.cdist is highly optimized
+        dists = torch.cdist(p1_f, p2_f, p=2.0) ** 2  # (B, N, M) - convert back to squared
+        
+        knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False, sorted=True)
+        return knn_dists, knn_idx
+    
+    # For large problems, use chunked processing
+    chunk_size = max(1, 50000 // M)  # Process ~50k distances at a time
+    all_dists = []
+    all_idx = []
+    
+    p2_f = p2.float()
+    
+    for i in range(0, N, chunk_size):
+        end_i = min(i + chunk_size, N)
+        p1_chunk = p1[:, i:end_i].float()
+        
+        dists_chunk = torch.cdist(p1_chunk, p2_f, p=2.0) ** 2
+        
+        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=True)
+        all_dists.append(knn_dists)
+        all_idx.append(knn_idx)
+    
+    return torch.cat(all_dists, dim=1), torch.cat(all_idx, dim=1)
+
+
 def three_nn(unknown: torch.Tensor, known: torch.Tensor):
     """
     Find the three nearest neighbors of unknown in known Parameters
@@ -89,11 +156,10 @@ def three_nn(unknown: torch.Tensor, known: torch.Tensor):
       idx:  (B, n, 3)  indices of neighbors in 'known'
     """
 
-    unknown = unknown.to(dtype=torch.float32, contiguous=True)
-    known   = known.to(dtype=torch.float32, contiguous=True)
+    unknown = unknown.to(dtype=torch.float32).contiguous()
+    known   = known.to(dtype=torch.float32).contiguous()
 
-    knn = knn_points(unknown, known, K=3)  
-    d2, idx = knn.dists, knn.idx
+    d2, idx = knn_points_torch(unknown, known, K=3)
 
     # to match pointnet2 API: return euclidean distances, not squared
     dist = torch.sqrt(torch.clamp(d2, min=0.0))
@@ -160,8 +226,7 @@ def ball_query(radius: float,
     Same return as original ball_query, but uses KNN then filters by radius.
     """
 
-    knn = knn_points(new_xyz, xyz, K=nsample)
-    d2, idx = knn.dists, knn.idx  
+    d2, idx = knn_points_torch(new_xyz, xyz, K=nsample)
 
     mask = d2 <= (radius * radius)
    
@@ -386,10 +451,9 @@ def cylinder_query(
     P = new_xyz.shape[1]
     
 
-    knn = knn_points(
+    d2_cand, idx_cand = knn_points_torch(
         new_xyz, xyz, K=N
-    )
-    d2_cand, idx_cand = knn.dists, knn.idx        # (B, P, K0), (B, P, K0)
+    )  # (B, P, K0), (B, P, K0)
 
     cand_xyz = torch.gather(
         xyz.unsqueeze(1).expand(B, P, N, 3),      # (B,P,N,3) view

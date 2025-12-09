@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && dpkg-reconfigure -f noninteractive tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-# Python build tooling for native/CUDA extensions (needed by PyTorch3D, etc.)
+# Python build tooling for native/CUDA extensions
 RUN python -m pip install --no-cache-dir --upgrade \
       pip \
       "setuptools<75" \
@@ -31,7 +31,7 @@ RUN python -m pip install --no-cache-dir --upgrade \
       packaging \
       "scikit-build-core>=0.10"
 
-# Core Python deps (modern, broadly compatible)
+# Core Python deps
 RUN pip install --no-cache-dir \
       "numpy>=2.3,<3" \
       "scipy>=1.16,<2" \
@@ -44,12 +44,6 @@ RUN pip install --no-cache-dir \
 # spconv: use cu121 wheel (works on CUDA 12.x runtimes)
 RUN pip install --no-cache-dir "spconv-cu121>=2.3,<2.5"
 
-# PyTorch3D: build from source against installed torch/CUDA (no build isolation)
-# Use the latest tag that exists (v0.7.7). If this fails against Torch 2.7.1,
-# switch to cloning 'main' or use an older Torch (e.g., 2.4.1 + cu12.1).
-RUN git clone --depth=1 --branch v0.7.7 https://github.com/facebookresearch/pytorch3d.git /tmp/pytorch3d \
- && python -m pip install --no-cache-dir --no-build-isolation -v /tmp/pytorch3d \
- && rm -rf /tmp/pytorch3d
 
 # Prepare cache dir with open permissions
 RUN mkdir -p /opt/cache && chmod -R 777 /opt/cache

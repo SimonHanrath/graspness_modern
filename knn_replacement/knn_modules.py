@@ -1,5 +1,4 @@
 import torch
-from pytorch3d.ops import knn_points
 
 @torch.no_grad()
 def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
@@ -7,6 +6,7 @@ def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
         lengths_query: torch.Tensor | None = None) -> torch.Tensor:
     """
     Compute k-NN in Euclidean space.
+    Memory-efficient implementation with chunked processing.
 
     Args
     ----
@@ -25,19 +25,44 @@ def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
     _, Cq, Q = query.shape
     assert C == Cq
 
-    ref_bnc   = ref.transpose(1, 2).contiguous()
-    query_bqc = query.transpose(1, 2).contiguous()
+    ref_bnc   = ref.transpose(1, 2).contiguous()    # (B, N, C)
+    query_bqc = query.transpose(1, 2).contiguous()  # (B, Q, C)
 
-    # Ensure both tensors have the same dtype for pytorch3d knn_points
-    # This is needed when using AMP (Automatic Mixed Precision)
-    if ref_bnc.dtype != query_bqc.dtype:
-        # Cast both to float32 to ensure compatibility
-        ref_bnc = ref_bnc.float()
-        query_bqc = query_bqc.float()
-
-    knn = knn_points(query_bqc, ref_bnc, K=min(k, N),
-                     lengths1=lengths_query, lengths2=lengths_ref)
-    idx_bqk = knn.idx                    # (B, Q, k)
+    # Ensure both tensors are float for distance computation
+    ref_bnc = ref_bnc.float()
+    query_bqc = query_bqc.float()
+    
+    K = min(k, N)
+    
+    # For small problems, use optimized torch.cdist
+    if Q * N < 100000:
+        # torch.cdist is highly optimized in PyTorch
+        dists = torch.cdist(query_bqc, ref_bnc, p=2.0) ** 2  # (B, Q, N) - squared distance
+        
+        if lengths_ref is not None:
+            mask = torch.arange(N, device=ref.device).view(1, 1, N) >= lengths_ref.view(B, 1, 1)
+            dists = dists.masked_fill(mask, float('inf'))
+        
+        _, idx_bqk = torch.topk(dists, K, dim=2, largest=False, sorted=True)
+    else:
+        # Chunked processing for large problems
+        chunk_size = max(1, 50000 // N)
+        all_idx = []
+        
+        for i in range(0, Q, chunk_size):
+            end_i = min(i + chunk_size, Q)
+            query_chunk = query_bqc[:, i:end_i]
+            
+            dists = torch.cdist(query_chunk, ref_bnc, p=2.0) ** 2
+            
+            if lengths_ref is not None:
+                mask = torch.arange(N, device=ref.device).view(1, 1, N) >= lengths_ref.view(B, 1, 1)
+                dists = dists.masked_fill(mask, float('inf'))
+            
+            _, idx_chunk = torch.topk(dists, K, dim=2, largest=False, sorted=True)
+            all_idx.append(idx_chunk)
+        
+        idx_bqk = torch.cat(all_idx, dim=1)
 
     # Return shape to (B, k, Q) to match the original wrapper
     inds = idx_bqk.permute(0, 2, 1).contiguous()
