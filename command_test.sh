@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=4 python test.py --camera kinect --dump_dir logs/log_kn/dump_epoch10 --checkpoint_path logs/log_kn/minkresunet_epoch10.tar --batch_size 1 --dataset_root /data3/graspnet --infer --eval --collision_thresh -1
+python test.py --dataset_root /datasets/graspnet --camera kinect --checkpoint_path logs/gsnet_currentcurrent/gsnet_modern_epoch40.tar --dump_dir dumps/gsnet_dev_kinect --batch_size 1 --infer --eval

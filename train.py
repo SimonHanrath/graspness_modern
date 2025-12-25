@@ -46,7 +46,6 @@ parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial 
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
 parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
-parser.add_argument('--use_compile', action='store_true', default=False, help='Use torch.compile for model optimization [PyTorch 2.0+]')
 parser.add_argument('--use_amp', action='store_true', default=False,
                     help='Use torch.cuda.amp for mixed-precision training')
 parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers [default: 0]')
@@ -121,26 +120,6 @@ def create_model_and_optimizer():
     net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
-
-    # Apply torch.compile for graph optimization ((requires CUDA capability >= 7.0)
-    if cfgs.use_compile:
-        if torch.cuda.is_available():
-            compute_capability = torch.cuda.get_device_capability(device)
-            cc_major, cc_minor = compute_capability
-            cc_value = cc_major + cc_minor * 0.1
-            
-            if cc_value >= 7.0:
-                log_string(f"Compiling model with torch.compile (GPU compute capability: {cc_major}.{cc_minor})...")
-                net = torch.compile(net, mode='default')
-                log_string("Model compilation enabled. First iteration will be slower.")
-            else:
-                gpu_name = torch.cuda.get_device_name(device)
-                log_string(f"WARNING: torch.compile disabled - {gpu_name} (compute capability {cc_major}.{cc_minor}) is not supported.")
-                log_string(f"         Triton compiler requires CUDA capability >= 7.0. Training will continue without compilation.")
-        else:
-            log_string("Compiling model with torch.compile (mode='default')...")
-            net = torch.compile(net, mode='default')
-            log_string("Model compilation enabled. First iteration will be slower.")
 
     # Load the Adam optimizer
     optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)

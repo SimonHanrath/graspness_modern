@@ -1,3 +1,5 @@
+# TODO: this is currently broken as we removed open3d from the container but here we still require it
+
 import os
 import sys
 import numpy as np
@@ -27,7 +29,7 @@ parser.add_argument('--checkpoint_path', default='/data/zibo/logs/graspness_kn.t
 parser.add_argument('--dump_dir', help='Dump dir to save outputs', default='/data/zibo/logs/')
 parser.add_argument('--seed_feat_dim', default=512, type=int, help='Point wise feature dim')
 parser.add_argument('--camera', default='kinect', help='Camera split [realsense/kinect]')
-parser.add_argument('--num_point', type=int, default=15000, help='Point Number [default: 15000]')
+parser.add_argument('--num_point', type=int, default=100000, help='Point Number [default: 15000]')
 parser.add_argument('--batch_size', type=int, default=1, help='Batch Size during inference [default: 1]')
 parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size for sparse convolution')
 parser.add_argument('--collision_thresh', type=float, default=-1,
@@ -35,8 +37,7 @@ parser.add_argument('--collision_thresh', type=float, default=-1,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--vis', action='store_true', default=False)
-parser.add_argument('--use_compile', action='store_true', default=False, help='Use torch.compile for inference optimization [PyTorch 2.0+]')
-parser.add_argument('--scene', type=str, default='0188')
+parser.add_argument('--scene', type=str, default='0001')
 parser.add_argument('--index', type=str, default='0000')
 cfgs = parser.parse_args()
 
@@ -50,6 +51,7 @@ def data_process():
     camera_type = cfgs.camera
 
     depth = np.array(Image.open(os.path.join(root, 'scenes', scene_id, camera_type, 'depth', index + '.png')))
+    rgb = np.array(Image.open(os.path.join(root, 'scenes', scene_id, camera_type, 'rgb', index + '.png')))
     seg = np.array(Image.open(os.path.join(root, 'scenes', scene_id, camera_type, 'label', index + '.png')))
     meta = scio.loadmat(os.path.join(root, 'scenes', scene_id, camera_type, 'meta', index + '.mat'))
     try:
@@ -71,6 +73,7 @@ def data_process():
     mask = (depth_mask & workspace_mask)
 
     cloud_masked = cloud[mask]
+    colors_masked = rgb.reshape(-1, 3)[mask.flatten()]
 
     # sample points random
     if len(cloud_masked) >= cfgs.num_point:
@@ -80,6 +83,7 @@ def data_process():
         idxs2 = np.random.choice(len(cloud_masked), cfgs.num_point - len(cloud_masked), replace=True)
         idxs = np.concatenate([idxs1, idxs2], axis=0)
     cloud_sampled = cloud_masked[idxs]
+    colors_sampled = colors_masked[idxs]
 
     # Shift so all coords are >= 0 (CRITICAL: must match training preprocessing!)
     offset = -cloud_sampled.min(axis=0)  # [3,]
@@ -89,6 +93,7 @@ def data_process():
                 'coors': cloud_sampled.astype(np.float32) / cfgs.voxel_size,
                 'feats': np.ones_like(cloud_sampled).astype(np.float32),
                 'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
+                'cloud_colors': colors_sampled.astype(np.float32) / 255.0,  # Normalize to [0, 1]
                 }
     return ret_dict
 
@@ -111,17 +116,11 @@ def inference(data_input):
     net.to(device)
     # Load checkpoint
     checkpoint = torch.load(cfgs.checkpoint_path)
-    net.load_state_dict(checkpoint['model_state_dict'])
+    net.load_state_dict(checkpoint['model_state_dict'], strict = False)
     start_epoch = checkpoint['epoch']
     print("-> loaded checkpoint %s (epoch: %d)" % (cfgs.checkpoint_path, start_epoch))
 
     net.eval()
-    
-    # Apply torch.compile for inference optimization (PyTorch 2.0+)
-    if cfgs.use_compile:
-        print("Compiling model with torch.compile (mode='reduce-overhead')...")
-        net = torch.compile(net, mode='reduce-overhead')  # 'reduce-overhead' optimizes for repeated inference
-        print("Model compilation enabled.")
     
     tic = time.time()
 
@@ -135,25 +134,9 @@ def inference(data_input):
     # Forward pass - use inference_mode for better performance than no_grad
     with torch.inference_mode():
         end_points = net(batch_data)
-        
-        # Debug: Check xyz_graspable coordinates
-        if 'xyz_graspable' in end_points:
-            xyz_grasp = end_points['xyz_graspable'][0].cpu().numpy()
-            print(f"\n=== DEBUG: xyz_graspable (before pred_decode) ===")
-            print(f"Range: X=[{xyz_grasp[:, 0].min():.3f}, {xyz_grasp[:, 0].max():.3f}], "
-                  f"Y=[{xyz_grasp[:, 1].min():.3f}, {xyz_grasp[:, 1].max():.3f}], "
-                  f"Z=[{xyz_grasp[:, 2].min():.3f}, {xyz_grasp[:, 2].max():.3f}]")
-        
         grasp_preds = pred_decode(end_points)
 
     preds = grasp_preds[0].detach().cpu().numpy()
-    
-    # Debug: Check decoded predictions
-    print(f"=== DEBUG: Decoded predictions ===")
-    print(f"Grasp centers (col 13:16) range: X=[{preds[:, 13].min():.3f}, {preds[:, 13].max():.3f}], "
-          f"Y=[{preds[:, 14].min():.3f}, {preds[:, 14].max():.3f}], "
-          f"Z=[{preds[:, 15].min():.3f}, {preds[:, 15].max():.3f}]")
-    print("=====================================\n")
     
     # NOTE: Grasps are predicted in the shifted coordinate space (all coords >= 0)
     # For visualization, we keep them in the same space as the point cloud
@@ -196,12 +179,9 @@ def inference(data_input):
     offset_path = os.path.join(save_dir, cfgs.index + '_offset.npy')
     if 'cloud_offset' in batch_data:
         np.save(offset_path, batch_data['cloud_offset'][0].cpu().numpy())
-        print(f"Saved offset to: {offset_path}")
-        print(f"NOTE: Grasps are in shifted coordinates (all >= 0).")
-        print(f"      To transform to camera coordinates: grasp_center -= offset")
 
     toc = time.time()
-    print('inference time: %fs' % (toc - tic))
+    print('Inference time: %.2fs' % (toc - tic))
 
 
 if __name__ == '__main__':
@@ -216,70 +196,59 @@ if __name__ == '__main__':
         gg = np.load(os.path.join(cfgs.dump_dir, scene_id, cfgs.camera, cfgs.index + '.npy'))
         gg = GraspGroup(gg)
         
-        # Debug: Print coordinate ranges
-        print(f"\n=== Coordinate Debug Info ===")
-        print(f"Point cloud range: X=[{pc[:, 0].min():.3f}, {pc[:, 0].max():.3f}], "
-              f"Y=[{pc[:, 1].min():.3f}, {pc[:, 1].max():.3f}], "
-              f"Z=[{pc[:, 2].min():.3f}, {pc[:, 2].max():.3f}]")
-        if len(gg) > 0:
-            grasp_centers = np.array([g.translation for g in gg])
-            print(f"Grasp centers range: X=[{grasp_centers[:, 0].min():.3f}, {grasp_centers[:, 0].max():.3f}], "
-                  f"Y=[{grasp_centers[:, 1].min():.3f}, {grasp_centers[:, 1].max():.3f}], "
-                  f"Z=[{grasp_centers[:, 2].min():.3f}, {grasp_centers[:, 2].max():.3f}]")
-            print(f"Total grasps before NMS: {len(gg)}")
-        
         gg = gg.nms()
         gg = gg.sort_by_score()
-        print(f"Total grasps after NMS: {len(gg)}")
         if gg.__len__() > 30:
             gg = gg[:30]
-        print(f"Showing top {len(gg)} grasps")
-        print("=============================\n")
         
+        # Generate Open3D gripper geometries
         grippers = gg.to_open3d_geometry_list()
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector(pc.astype(np.float32))
         
-        # Save visualization to file instead of interactive display
+        # Save visualization to file
         vis_dir = os.path.join(cfgs.dump_dir, scene_id, cfgs.camera)
         if not os.path.exists(vis_dir):
             os.makedirs(vis_dir)
         
-        # Option 1: Save point cloud and grasps separately
-        pcd_path = os.path.join(vis_dir, f'{cfgs.index}_cloud.ply')
-        o3d.io.write_point_cloud(pcd_path, cloud)
-        print(f"Point cloud saved to: {pcd_path}")
-        
-        # Option 2: Use matplotlib for visualization (works in headless environments)
-        print("Generating matplotlib-based visualization...")
+        # Create matplotlib visualization with Open3D gripper meshes
         try:
-            fig = plt.figure(figsize=(12, 8))
+            fig = plt.figure(figsize=(16, 12))
             ax = fig.add_subplot(111, projection='3d')
+            ax.computed_zorder = False  # Disable automatic z-ordering
             
-            # Plot point cloud (downsample for performance)
-            pc_sample = pc[::10]
-            ax.scatter(pc_sample[:, 0], pc_sample[:, 1], pc_sample[:, 2], 
-                      c='gray', marker='.', s=1, alpha=0.3, label='Point Cloud')
+            # Plot point cloud with RGB colors
+            colors = data_dict.get('cloud_colors', np.zeros((len(pc), 3)))
+            ax.scatter(pc[:, 0], pc[:, 1], pc[:, 2], 
+                      c=colors, marker='.', s=3, alpha=1.0, label='Point Cloud', 
+                      zorder=1, depthshade=False)
             
-            # Plot grasp centers and orientations
-            num_grasps_to_show = min(10, len(gg))
+            # Plot grippers using Open3D mesh data
+            num_grasps_to_show = min(30, len(grippers))
+            top_3_colors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]  # Red, Green, Blue
+            
             for idx in range(num_grasps_to_show):
-                g = gg[idx]
-                center = g.translation
-                # Draw grasp center
-                ax.scatter(center[0], center[1], center[2], 
-                         c='red', marker='o', s=50, alpha=0.8)
-                # Draw approach direction
-                approach = g.rotation_matrix[:, 2] * 0.05  # 5cm arrow
-                ax.quiver(center[0], center[1], center[2],
-                         approach[0], approach[1], approach[2],
-                         color='blue', arrow_length_ratio=0.3, linewidth=2)
+                gripper = grippers[idx]
+                
+                # Color: top 3 are red, green, blue; rest are black
+                if idx < 3:
+                    color = top_3_colors[idx]
+                else:
+                    color = [0.0, 0.0, 0.0]  # Black
+                
+                # Extract mesh vertices and triangles from Open3D geometry
+                vertices = np.asarray(gripper.vertices)
+                triangles = np.asarray(gripper.triangles)
+                
+                # Plot the gripper mesh as a surface (drawn on top of point cloud)
+                ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2],
+                               triangles=triangles, color=color, alpha=1.0,
+                               edgecolor='none', shade=True, zorder=10)
             
-            ax.set_xlabel('X (m)')
-            ax.set_ylabel('Y (m)')
-            ax.set_zlabel('Z (m)')
-            ax.set_title(f'Grasp Visualization - Scene {cfgs.scene}, Frame {cfgs.index}\nTop {num_grasps_to_show} grasps shown')
-            ax.legend()
+            ax.set_xlabel('X (m)', fontsize=12)
+            ax.set_ylabel('Y (m)', fontsize=12)
+            ax.set_zlabel('Z (m)', fontsize=12)
+            ax.set_title(f'Grasp Visualization - Scene {cfgs.scene}, Frame {cfgs.index}\n'
+                       f'Showing top {num_grasps_to_show}/{len(gg)} grasps after NMS', 
+                       fontsize=14)
             
             # Set equal aspect ratio
             max_range = np.array([pc[:, 0].max()-pc[:, 0].min(),
@@ -290,46 +259,18 @@ if __name__ == '__main__':
             mid_z = (pc[:, 2].max()+pc[:, 2].min()) * 0.5
             ax.set_xlim(mid_x - max_range, mid_x + max_range)
             ax.set_ylim(mid_y - max_range, mid_y + max_range)
-            ax.set_zlim(mid_z - max_range, mid_z + max_range)
+            ax.set_zlim(mid_z + max_range, mid_z - max_range)  # Inverted Z-axis
+            
+            # Set viewing angle - looking in direction of increasing y-axis
+            ax.view_init(elev=60, azim=-60)
             
             # Save figure
-            fig_path = os.path.join(vis_dir, f'{cfgs.index}_visualization.png')
-            plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+            fig_path = os.path.join(vis_dir, f'{cfgs.index}_grippers.png')
+            plt.savefig(fig_path, dpi=200, bbox_inches='tight', facecolor='white')
             plt.close()
             print(f"Visualization saved to: {fig_path}")
-            print(f"Total grasps detected: {len(gg)}")
+            
         except Exception as e:
-            print(f"Matplotlib visualization failed: {e}")
-            print("Point cloud PLY file saved. View it with MeshLab, CloudCompare, or Open3D on a machine with display.")
-        
-        # Note: Open3D interactive visualization requires display (X11/OpenGL)
-        # To view interactively, run on a machine with display:
-        # o3d.visualization.draw_geometries([cloud, *grippers])
+            print(f"Visualization failed: {e}")
 
-        # # Example code for execution
-        # g = gg[0]
-        # translation = g.translation
-        # rotation = g.rotation_matrix
-
-        # pose = translation_rotation_2_matrix(translation,rotation) #transform into 4x4 matrix, should be easy
-        # # Transform the grasp pose from camera frame to robot coordinate, implement according to your robot configuration
-        # tcp_pose = Camera_To_Robot(pose)
-
-        
-        # tcp_ready_pose = copy.deepcopy(tcp_pose)
-        # tcp_ready_pose[:3, 3] = tcp_ready_pose[:3, 3] - 0.1 * tcp_ready_pose[:3, 2] # The ready pose is backward along the actual grasp pose by 10cm to avoid collision
        
-        # tcp_away_pose = copy.deepcopy(tcp_pose)
-        
-        # # to avoid the gripper rotate around the z_{tcp} axis in the clock-wise direction.
-        # tcp_away_pose[3,:3] = np.array([0,0,-1], dtype=np.float64)
-        
-        # # to avoid the object collide with the scene.
-        # tcp_away_pose[2,3] += 0.1
-
-        # # We rely on python-urx to send the tcp pose the ur5 arm, the package is available at https://github.com/SintefManufacturing/python-urx
-        # urx.movels([tcp_ready_pose, tcp_pose], acc = acc, vel = vel, radius = 0.05)
-
-        # # CLOSE_GRIPPER(), implement according to your robot configuration
-        # urx.movels([tcp_away_pose, self.throw_pose()], acc = 1.2 * acc, vel = 1.2 * vel, radius = 0.05, wait=False)
-

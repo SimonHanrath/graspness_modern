@@ -17,8 +17,6 @@ import os
 import sys
 import torch
 
-import matplotlib.pyplot as plt
-
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
@@ -56,33 +54,6 @@ def grasp_points_to_json(grasp_points, offset=None):
     return json.dumps(grasp_points_dicts)
 
 
-
-def visualize_point_cloud(cloud, graspGroups = None):
-    """
-    Visualize RGB and depth image as point cloud using Open3D
-    
-    Args:
-        color_image: RGB image as numpy array
-        depth_image: Depth image as numpy array
-        camera_serial: Serial number of the camera to get intrinsics
-    """
-    
-    # Create coordinate frame
-    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
-
-    # Rotate, such that we view from camera view
-    trans_mat = np.array([[1,0,0,0],[0,1,0,0],[0,0,-1,0],[0,0,0,1]])
-    cloud.transform(trans_mat)
-
-    if graspGroups is not None:
-        grippers = graspGroups.to_open3d_geometry_list()
-        for gripper in grippers:
-            gripper.transform(trans_mat)
-        o3d.visualization.draw_geometries([*grippers, cloud, coordinate_frame])
-    else:
-        o3d.visualization.draw_geometries([cloud, coordinate_frame])
-
-
 # Configuration
 parser = argparse.ArgumentParser()
 parser.add_argument('--checkpoint_path', type=str, required=True, help='Model checkpoint path')
@@ -106,28 +77,6 @@ xmin, xmax = -1.0, 1.0
 ymin, ymax = -1.0, 1.0
 zmin, zmax = 0.0, 1.0
 WORKSPACE_LIMITS = np.array([xmin, xmax, ymin, ymax, zmin, zmax])
-
-
-
-def plot_point_cloud_rgb(xyzrgb_points):
-    """Plot RGB-colored point cloud using Matplotlib."""
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # Extract coordinates and colors
-    xs, ys, zs = xyzrgb_points[:, 0], xyzrgb_points[:, 1], xyzrgb_points[:, 2]
-    colors = xyzrgb_points[:, 3:]
-    
-    # Normalize colors to 0-1 range if needed
-    if colors.max() > 1.0:
-        colors = colors / 255.0
-
-    ax.scatter(xs, ys, zs, c=colors, s=1)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    plt.show()
-
 
 def preprocess_point_cloud(points):
     """Preprocess point cloud for model input."""

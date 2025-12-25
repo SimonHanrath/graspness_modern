@@ -1,1 +1,2 @@
-CUDA_VISIBLE_DEVICES=4 python train.py --camera kinect --log_dir logs/log_kn --batch_size 4 --learning_rate 0.001 --model_name minkuresunet --dataset_root /cshome/$USER/datasets/GraspNet
+python train.py --dataset_root /datasets/graspnet --camera kinect \
+  --model_name gsnet_dev --log_dir logs/gsnet_dev --max_epoch 1 --batch_size 1

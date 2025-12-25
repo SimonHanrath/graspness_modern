@@ -57,9 +57,10 @@ def inference():
     net.to(device)
     # Load checkpoint
     checkpoint = torch.load(cfgs.checkpoint_path)
-    net.load_state_dict(checkpoint['model_state_dict'])
+    net.load_state_dict(checkpoint['model_state_dict'], strict=False)
     start_epoch = checkpoint['epoch']
     print("-> loaded checkpoint %s (epoch: %d)" % (cfgs.checkpoint_path, start_epoch))
+    print("Note: Missing keys (buffers) will use default values from model initialization")
 
     batch_interval = 100
     net.eval()
