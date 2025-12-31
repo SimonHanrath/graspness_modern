@@ -1,6 +1,7 @@
 /data
-/knn
-/pointnet2
 /graspnetAPI
 /logs
 /dumps
+# Python
+__pycache__/
+*.pyc

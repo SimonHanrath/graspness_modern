@@ -14,7 +14,7 @@ from __future__ import (
 import torch
 from torch.autograd import Function
 import torch.nn as nn
-import pointnet_replacement.pytorch_utils as pt_utils
+import utils.pointnet.pytorch_utils as pt_utils
 import sys
 
 from typing import *

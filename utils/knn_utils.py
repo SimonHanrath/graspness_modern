@@ -36,7 +36,6 @@ def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
     
     # For small problems, use optimized torch.cdist
     if Q * N < 100000:
-        # torch.cdist is highly optimized in PyTorch
         dists = torch.cdist(query_bqc, ref_bnc, p=2.0) ** 2  # (B, Q, N) - squared distance
         
         if lengths_ref is not None:
@@ -64,6 +63,6 @@ def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
         
         idx_bqk = torch.cat(all_idx, dim=1)
 
-    # Return shape to (B, k, Q) to match the original wrapper
+    # shape to (B, k, Q)
     inds = idx_bqk.permute(0, 2, 1).contiguous()
     return inds.long()

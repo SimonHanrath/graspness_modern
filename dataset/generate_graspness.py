@@ -6,7 +6,7 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 from utils.data_utils import get_workspace_mask, CameraInfo, create_point_cloud_from_depth_image
-from knn_replacement.knn_modules import knn
+from utils.knn_utils import knn
 import torch
 from graspnetAPI.utils.xmlhandler import xmlReader
 from graspnetAPI.utils.utils import get_obj_pose_list, transform_points

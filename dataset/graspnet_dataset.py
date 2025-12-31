@@ -195,9 +195,6 @@ class GraspNetDataset(Dataset):
             idxs = np.concatenate([idxs1, idxs2], axis=0)
         cloud_sampled = cloud_masked[idxs]
 
-        #TODO: double check this part
-
-        # Shift so all coords are >= 0
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset
 
@@ -281,7 +278,6 @@ class GraspNetDataset(Dataset):
         if self.augment:
             cloud_sampled, object_poses_list = self.augment_data(cloud_sampled, object_poses_list)
 
-        # TODO: double check this part
         # Shift so all coords are >= 0
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset

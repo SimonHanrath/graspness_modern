@@ -61,16 +61,15 @@ class ResNetBase(nn.Module):
         for m in self.modules():
             if isinstance(m, (spconv.SparseConv3d, spconv.SubMConv3d, spconv.SparseInverseConv3d)):
                 # spconv weight shape: [out_channels, kH, kW, kD, in_channels]
-                # We need to manually calculate fan_in and fan_out for correct initialization
+                # Manually calculate fan_out for correct initialization
                 weight = m.weight
                 if weight.ndim == 5:  # 3D convolution
                     out_channels, kH, kW, kD, in_channels = weight.shape
-                    fan_in = in_channels * kH * kW * kD
                     fan_out = out_channels * kH * kW * kD
                     
                     # Kaiming initialization for ReLU: std = sqrt(2 / fan_out) for mode='fan_out'
                     # We apply a scaling factor of 2 to match ME's effective output magnitude
-                    # This accounts for subtle differences in variance propagation through
+                    # This accounts for differences in variance propagation through
                     # sparse convolutions and the U-Net architecture and makes sure we have enough outputs above the graspenss threshold
                     std = (2.0 / fan_out) ** 0.5 * 2
                     with torch.no_grad():

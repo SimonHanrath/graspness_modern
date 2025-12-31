@@ -8,8 +8,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
-import pointnet_replacement.pytorch_utils as pt_utils
-from pointnet_replacement.pointnet2_utils import CylinderQueryAndGroup
+import utils.pointnet.pytorch_utils as pt_utils
+from utils.pointnet.pointnet2_utils import CylinderQueryAndGroup
 from utils.loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
 
 

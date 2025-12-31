@@ -14,10 +14,12 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
 from models.backbone_resunet14 import SPconvUNet14D
+from models.backbone_pointnet_transformer import PointNetTransformer14D
+
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
 from utils.label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
-from pointnet_replacement.pointnet2_utils import furthest_point_sample, gather_operation
+from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operation
 
 
 class GraspNet(nn.Module):
@@ -30,7 +32,10 @@ class GraspNet(nn.Module):
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
 
-        self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        # here we can swap in different backbones
+        #self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        
+        self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
@@ -62,26 +67,24 @@ class GraspNet(nn.Module):
         
         extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
         
-        # Ensure minimum spatial shape to handle 4 stride-2 layers (downsample by 16x)
-        # Without this, flat point clouds (e.g., Z=1) would cause "spatial shape reach zero" error
-        # Minimum dimension after 4 stride-2 layers: 16 -> 8 -> 4 -> 2 -> 1
+        # Ensure minimum spatial shape to handle 4 stride 2 layers (downsample by 16)
+        # Without this, flat point clouds (e.g., Z=1) would cause spatial shape reach zero error
         MIN_SPATIAL_DIM = 16
         
         # spconv expects spatial_shape in (X, Y, Z) order to match coords format [batch, x, y, z]
         spatial_shape_xyz = (
-            max(int(extent[0].item()), MIN_SPATIAL_DIM),  # X
-            max(int(extent[1].item()), MIN_SPATIAL_DIM),  # Y
-            max(int(extent[2].item()), MIN_SPATIAL_DIM),  # Z
+            max(int(extent[0].item()), MIN_SPATIAL_DIM),  
+            max(int(extent[1].item()), MIN_SPATIAL_DIM),  
+            max(int(extent[2].item()), MIN_SPATIAL_DIM),  
         )
 
-        # coords is already in correct format [batch, x, y, z] - no reordering needed
         coords_bxyz = coords.contiguous().to(torch.int32)
 
         sparse_input = spconv.SparseConvTensor(
-            feats,                 # (M, Cin) where M is unique voxels
+            feats,                 # (M, Cin) 
             coords_bxyz,           # (M, 4) [batch, x, y, z], int32
             spatial_shape_xyz,     # (X, Y, Z)
-            B                      # batch size
+            B                      
         )
         
         # spconv UNet will preserve voxel structure (same coordinates, different features)
@@ -89,8 +92,7 @@ class GraspNet(nn.Module):
         voxel_features = sparse_output.features  # (M, C) - same M voxels as input
         
         # Map voxel features back to original dense point cloud using quantize2original
-        # quantize2original[i] gives the voxel index for original point i
-        # This is the same approach as MinkowskiEngine
+        # This is to mimic the approach from MinkowskiEngine
         seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
 
         end_points = self.graspable(seed_features, end_points)
@@ -130,18 +132,19 @@ class GraspNet(nn.Module):
                 cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns
                 cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # feat_dim*num_to_sample
             else:
-                # No graspable points - use zeros (this sample will likely be ignored in loss)
-                cur_seed_xyz = torch.zeros((0, 3), device=cur_seed_xyz.device, dtype=cur_seed_xyz.dtype)
-                cur_feat = torch.zeros((cur_feat.shape[0], 0), device=cur_feat.device, dtype=cur_feat.dtype)
+                # No graspable points: use zeros with correct feature dimension
+                cur_seed_xyz = torch.zeros((0, 3), device=seed_xyz.device, dtype=seed_xyz.dtype)
+                cur_feat = torch.zeros((self.seed_feature_dim, 0), device=seed_features.device, dtype=seed_features.dtype)
             
             # Pad to M_points if necessary
             if num_to_sample < self.M_points:
                 pad_num = self.M_points - num_to_sample
-                # Pad xyz with zeros (or repeat last point if you prefer)
-                xyz_pad = torch.zeros((pad_num, 3), device=cur_seed_xyz.device, dtype=cur_seed_xyz.dtype)
+                # Pad xyz with zeros 
+                xyz_pad = torch.zeros((pad_num, 3), device=seed_xyz.device, dtype=seed_xyz.dtype)
                 cur_seed_xyz = torch.cat([cur_seed_xyz, xyz_pad], dim=0)
-                # Pad features with zeros
-                feat_pad = torch.zeros((cur_feat.shape[0], pad_num), device=cur_feat.device, dtype=cur_feat.dtype)
+                # Pad features with zeros (use self.seed_feature_dim to handle empty cur_feat case)
+                feat_dim = cur_feat.shape[0] if cur_feat.shape[0] > 0 else self.seed_feature_dim
+                feat_pad = torch.zeros((feat_dim, pad_num), device=seed_features.device, dtype=seed_features.dtype)
                 cur_feat = torch.cat([cur_feat, feat_pad], dim=1)
 
             seed_features_graspable.append(cur_feat)
