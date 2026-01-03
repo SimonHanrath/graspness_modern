@@ -6,7 +6,7 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 from utils.data_utils import get_workspace_mask, CameraInfo, create_point_cloud_from_depth_image
-from utils.knn_utils import knn
+from utils.knn_utils import knn_query
 import torch
 from graspnetAPI.utils.xmlhandler import xmlReader
 from graspnetAPI.utils.utils import get_obj_pose_list, transform_points
@@ -107,10 +107,9 @@ if __name__ == '__main__':
             if grasp_points.shape[0] > 0:
                 # ---- speed-safe block (no autograd, chunked KNN) ----
                 with torch.no_grad():
-                    # to GPU (original code used .cuda(); we keep that for parity)
-                    grasp_points_t = torch.from_numpy(grasp_points).cuda()
-                    grasp_points_graspness_t = torch.from_numpy(grasp_points_graspness).cuda()
-                    grasp_points_t = grasp_points_t.transpose(0, 1).contiguous().unsqueeze(0)
+                    # to GPU - grasp_points: (Np, 3), cloud_masked: (Q, 3)
+                    grasp_points_t = torch.from_numpy(grasp_points).cuda()  # (Np, 3)
+                    grasp_points_graspness_t = torch.from_numpy(grasp_points_graspness).cuda()  # (Np, 1)
 
                     CHUNK = int(cfgs.chunk)
                     part_num = int(masked_points_num / CHUNK)
@@ -121,10 +120,10 @@ if __name__ == '__main__':
                                 break
                         else:
                             cloud_masked_partial = cloud_masked[CHUNK * (i - 1):(i * CHUNK)]
-                        cloud_masked_partial_t = torch.from_numpy(cloud_masked_partial).cuda()
-                        cloud_masked_partial_t = cloud_masked_partial_t.transpose(0, 1).contiguous().unsqueeze(0)
-                        # knn returns (B, k, Q), we need (Q,) for k=1
-                        nn_inds = knn(grasp_points_t, cloud_masked_partial_t, k=1).squeeze(0).squeeze(0)
+                        cloud_masked_partial_t = torch.from_numpy(cloud_masked_partial).cuda()  # (chunk, 3)
+                        # knn_query: find nearest grasp point for each cloud point
+                        # Returns (chunk, 1) -> squeeze to (chunk,)
+                        nn_inds = knn_query(grasp_points_t, k=1, query_pos=cloud_masked_partial_t).squeeze(-1)
                         # Clamp indices to valid range as safety measure
                         nn_inds = torch.clamp(nn_inds, 0, grasp_points_graspness_t.shape[0] - 1)
                         cloud_masked_graspness[CHUNK * (i - 1):(i * CHUNK)] = torch.index_select(

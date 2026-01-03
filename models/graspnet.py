@@ -15,6 +15,7 @@ sys.path.append(ROOT_DIR)
 
 from models.backbone_resunet14 import SPconvUNet14D
 from models.backbone_pointnet_transformer import PointNetTransformer14D
+from models.pointcept.backbone_pointnet_transformer_pointcept import PointTransformerV3EncoderFullRes
 
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
@@ -34,8 +35,25 @@ class GraspNet(nn.Module):
 
         # here we can swap in different backbones
         #self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        #self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         
-        self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        # Point Transformer V3 backbone (from Pointcept)
+        # PTv3 paper default config for indoor scenes
+        self.backbone = PointTransformerV3EncoderFullRes(
+            in_channels=3, 
+            out_channels=self.seed_feature_dim,
+            # PTv3 paper config - heavy bottleneck, wider channels
+            enc_depths=(2, 2, 2, 6, 2),
+            enc_channels=(48, 96, 192, 384, 512),
+            enc_num_head=(3, 6, 12, 24, 32),
+            enc_patch_size=(48, 48, 48, 48, 48),
+            stride=(2, 2, 2, 2),
+            dec_depths=(2, 2, 2, 2),
+            dec_channels=(48, 96, 192, 384),
+            dec_num_head=(3, 6, 12, 24),
+            dec_patch_size=(48, 48, 48, 48),
+            enable_flash=False,  # Disable flash attention for compatibility
+        )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)

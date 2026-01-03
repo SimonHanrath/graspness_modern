@@ -1,68 +1,104 @@
+"""
+k-Nearest Neighbors utilities for point cloud processing.
+
+Provides efficient kNN implementations using pure PyTorch with:
+- Chunked computation for memory efficiency on large point clouds
+- Batched processing support
+- Flat (N, 3) tensor format for intuitive point cloud handling
+"""
+
 import torch
 
+
+# =============================================================================
+# Core Implementation - Flat Format (N, 3)
+# =============================================================================
+
 @torch.no_grad()
-def knn(ref: torch.Tensor, query: torch.Tensor, k: int = 1,
-        lengths_ref: torch.Tensor | None = None,
-        lengths_query: torch.Tensor | None = None) -> torch.Tensor:
+def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
+              query_pos: torch.Tensor = None, query_batch: torch.Tensor = None) -> torch.Tensor:
     """
-    Compute k-NN in Euclidean space.
-    Memory-efficient implementation with chunked processing.
-
-    Args
-    ----
-    ref:   (B, C, N)  reference points  (we search neighbors IN this set)
-    query: (B, C, Q)  query points      (we search neighbors FOR these)
-    k:     int        number of neighbors
-    lengths_ref:   optional (B,) valid counts for ref if padded
-    lengths_query: optional (B,) valid counts for query if padded
-
-    Returns
-    -------
-    inds: (B, k, Q) indices into ref for each query
+    Find k-nearest neighbors for each point using pure PyTorch.        
+    Args:
+        pos: (N, 3) reference point positions (we search neighbors IN this set)
+        k: number of neighbors to find
+        batch: (N,) batch indices for each reference point (optional, for batched processing)
+        query_pos: (Q, 3) query point positions (optional, defaults to pos for self-kNN)
+        query_batch: (Q,) batch indices for query points (optional, defaults to batch)
+    
+    Returns:
+        idx: (Q, k) indices into pos for each query point's k-nearest neighbors
     """
-    assert ref.dim() == 3 and query.dim() == 3
-    B, C, N = ref.shape
-    _, Cq, Q = query.shape
-    assert C == Cq
-
-    ref_bnc   = ref.transpose(1, 2).contiguous()    # (B, N, C)
-    query_bqc = query.transpose(1, 2).contiguous()  # (B, Q, C)
-
-    # Ensure both tensors are float for distance computation
-    ref_bnc = ref_bnc.float()
-    query_bqc = query_bqc.float()
+    # Handle self-kNN case
+    if query_pos is None:
+        query_pos = pos
+        query_batch = batch
+    elif query_batch is None and batch is not None:
+        query_batch = batch
     
-    K = min(k, N)
+    device = pos.device
+    N = pos.shape[0]
+    Q = query_pos.shape[0]
     
-    # For small problems, use optimized torch.cdist
-    if Q * N < 100000:
-        dists = torch.cdist(query_bqc, ref_bnc, p=2.0) ** 2  # (B, Q, N) - squared distance
+    # Ensure float for distance computation
+    pos = pos.float()
+    query_pos = query_pos.float()
+    
+    if batch is None:
+        # Single batch - compute pairwise distances
+        k_actual = min(k, N)
         
-        if lengths_ref is not None:
-            mask = torch.arange(N, device=ref.device).view(1, 1, N) >= lengths_ref.view(B, 1, 1)
-            dists = dists.masked_fill(mask, float('inf'))
+        dist = torch.cdist(query_pos, pos)  # (Q, N)
+        _, idx = dist.topk(k_actual, dim=-1, largest=False)  # (Q, k)
         
-        _, idx_bqk = torch.topk(dists, K, dim=2, largest=False, sorted=True)
+        # Pad if k > N
+        if k > N:
+            pad = idx[:, :1].expand(-1, k - N)
+            idx = torch.cat([idx, pad], dim=1)
+        
+        return idx
     else:
-        # Chunked processing for large problems
-        chunk_size = max(1, 50000 // N)
-        all_idx = []
+        # Batched processing to find neighbors within same batch only
+        unique_batches = torch.unique(batch)
+        idx = torch.zeros(Q, k, dtype=torch.long, device=device)
         
-        for i in range(0, Q, chunk_size):
-            end_i = min(i + chunk_size, Q)
-            query_chunk = query_bqc[:, i:end_i]
+        for b in unique_batches:
+            # Get reference points for this batch
+            ref_mask = (batch == b)
+            pos_b = pos[ref_mask]
+            ref_indices = torch.where(ref_mask)[0]
+            n_b = pos_b.shape[0]
             
-            dists = torch.cdist(query_chunk, ref_bnc, p=2.0) ** 2
+            # Get query points for this batch
+            query_mask = (query_batch == b) if query_batch is not None else ref_mask
+            query_pos_b = query_pos[query_mask]
+            query_indices = torch.where(query_mask)[0]
+            q_b = query_pos_b.shape[0]
             
-            if lengths_ref is not None:
-                mask = torch.arange(N, device=ref.device).view(1, 1, N) >= lengths_ref.view(B, 1, 1)
-                dists = dists.masked_fill(mask, float('inf'))
+            if n_b == 0 or q_b == 0:
+                continue
+                
+            k_b = min(k, n_b)
             
-            _, idx_chunk = torch.topk(dists, K, dim=2, largest=False, sorted=True)
-            all_idx.append(idx_chunk)
+            #if q_b * n_b < 50_000_000:
+            dist_b = torch.cdist(query_pos_b, pos_b)
+            _, local_idx = dist_b.topk(k_b, dim=-1, largest=False)
+            """else: TODO: think about removing this
+                local_idx = torch.zeros(q_b, k_b, dtype=torch.long, device=device)
+                chunk_size = max(1, 25_000_000 // n_b)
+                for i in range(0, q_b, chunk_size):
+                    end_i = min(i + chunk_size, q_b)
+                    dist_chunk = torch.cdist(query_pos_b[i:end_i], pos_b)
+                    _, local_idx[i:end_i] = dist_chunk.topk(k_b, dim=-1, largest=False)
+            """
+            # Map local indices to global indices
+            global_idx = ref_indices[local_idx]
+            
+            # Pad if k_b < k
+            if k_b < k:
+                pad_idx = global_idx[:, :1].expand(-1, k - k_b)
+                global_idx = torch.cat([global_idx, pad_idx], dim=1)
+            
+            idx[query_indices] = global_idx
         
-        idx_bqk = torch.cat(all_idx, dim=1)
-
-    # shape to (B, k, Q)
-    inds = idx_bqk.permute(0, 2, 1).contiguous()
-    return inds.long()
+        return idx

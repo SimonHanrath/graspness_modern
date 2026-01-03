@@ -27,147 +27,20 @@ Hyperparameters tuned for:
 Author: Auto-generated for GraspNet pipeline
 """
 
+import os
+import sys
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import spconv.pytorch as spconv
 
+# Add parent directory to path for imports
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)
+sys.path.append(ROOT_DIR)
 
-# =============================================================================
-# Utility Functions
-# =============================================================================
-
-def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None) -> torch.Tensor:
-    """
-    Find k-nearest neighbors for each point using pure PyTorch.
-    
-    Args:
-        pos: (N, 3) point positions
-        k: number of neighbors
-        batch: (N,) batch indices for each point (optional, for batched processing)
-    
-    Returns:
-        idx: (N, k) indices of k-nearest neighbors for each point
-    """
-    if batch is None:
-        # Single batch - compute pairwise distances
-        # Use chunked computation for memory efficiency
-        N = pos.shape[0]
-        k = min(k, N)
-        
-        if N <= 8192:
-            # Small enough to compute full distance matrix
-            dist = torch.cdist(pos, pos)  # (N, N)
-            _, idx = dist.topk(k, dim=-1, largest=False)  # (N, k)
-        else:
-            # Chunked computation for large point clouds
-            idx = torch.zeros(N, k, dtype=torch.long, device=pos.device)
-            chunk_size = 4096
-            for i in range(0, N, chunk_size):
-                end_i = min(i + chunk_size, N)
-                dist_chunk = torch.cdist(pos[i:end_i], pos)  # (chunk, N)
-                _, idx[i:end_i] = dist_chunk.topk(k, dim=-1, largest=False)
-        return idx
-    else:
-        # Batched processing - find neighbors within same batch only
-        device = pos.device
-        N = pos.shape[0]
-        k = min(k, N)
-        
-        # Get unique batch indices
-        unique_batches = torch.unique(batch)
-        idx = torch.zeros(N, k, dtype=torch.long, device=device)
-        
-        for b in unique_batches:
-            mask = (batch == b)
-            pos_b = pos[mask]
-            indices_b = torch.where(mask)[0]
-            n_b = pos_b.shape[0]
-            k_b = min(k, n_b)
-            
-            if n_b <= 8192:
-                dist_b = torch.cdist(pos_b, pos_b)
-                _, local_idx = dist_b.topk(k_b, dim=-1, largest=False)
-            else:
-                local_idx = torch.zeros(n_b, k_b, dtype=torch.long, device=device)
-                chunk_size = 4096
-                for i in range(0, n_b, chunk_size):
-                    end_i = min(i + chunk_size, n_b)
-                    dist_chunk = torch.cdist(pos_b[i:end_i], pos_b)
-                    _, local_idx[i:end_i] = dist_chunk.topk(k_b, dim=-1, largest=False)
-            
-            # Map local indices to global indices
-            global_idx = indices_b[local_idx]
-            
-            # Pad if k_b < k
-            if k_b < k:
-                pad_idx = global_idx[:, :1].expand(-1, k - k_b)
-                global_idx = torch.cat([global_idx, pad_idx], dim=1)
-            
-            idx[mask] = global_idx
-        
-        return idx
-
-
-def farthest_point_sampling(pos: torch.Tensor, num_samples: int, batch: torch.Tensor = None) -> torch.Tensor:
-    """
-    Farthest point sampling using pure PyTorch.
-    
-    Args:
-        pos: (N, 3) point positions
-        num_samples: number of points to sample
-        batch: (N,) batch indices
-    
-    Returns:
-        idx: (num_samples,) or list of indices per batch
-    """
-    device = pos.device
-    N = pos.shape[0]
-    
-    if batch is None:
-        # Single batch FPS
-        num_samples = min(num_samples, N)
-        sampled_idx = torch.zeros(num_samples, dtype=torch.long, device=device)
-        distances = torch.full((N,), float('inf'), device=device)
-        
-        # Start from random point
-        farthest = torch.randint(0, N, (1,), device=device).item()
-        
-        for i in range(num_samples):
-            sampled_idx[i] = farthest
-            centroid = pos[farthest:farthest+1]
-            dist = torch.sum((pos - centroid) ** 2, dim=-1)
-            distances = torch.minimum(distances, dist)
-            farthest = torch.argmax(distances).item()
-        
-        return sampled_idx
-    else:
-        # Batched FPS
-        unique_batches = torch.unique(batch)
-        all_idx = []
-        
-        for b in unique_batches:
-            mask = (batch == b)
-            pos_b = pos[mask]
-            indices_b = torch.where(mask)[0]
-            n_b = pos_b.shape[0]
-            num_samples_b = min(num_samples, n_b)
-            
-            sampled_local = torch.zeros(num_samples_b, dtype=torch.long, device=device)
-            distances = torch.full((n_b,), float('inf'), device=device)
-            farthest = torch.randint(0, n_b, (1,), device=device).item()
-            
-            for i in range(num_samples_b):
-                sampled_local[i] = farthest
-                centroid = pos_b[farthest:farthest+1]
-                dist = torch.sum((pos_b - centroid) ** 2, dim=-1)
-                distances = torch.minimum(distances, dist)
-                farthest = torch.argmax(distances).item()
-            
-            all_idx.append(indices_b[sampled_local])
-        
-        return all_idx
+from utils.knn_utils import knn_query
 
 
 # =============================================================================
@@ -216,6 +89,9 @@ class RelativePositionalEncoding(nn.Module):
     """
     Learnable relative positional encoding based on 3D displacement vectors.
     Used in local attention to encode spatial relationships.
+    
+    Following Point Transformer paper: δ = θ(pi - pj)
+    The encoding is added to both the attention branch and the value branch.
     """
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
@@ -223,42 +99,51 @@ class RelativePositionalEncoding(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         
-        # MLP to encode relative positions
+        # MLP to encode relative positions (θ in the paper)
+        # Output dimension matches head_dim so it can be added to features
         self.pos_enc = nn.Sequential(
             nn.Linear(3, 64),
-            nn.GELU(),
-            nn.Linear(64, num_heads),
+            nn.ReLU(),  # Paper uses ReLU
+            nn.Linear(64, embed_dim),
         )
     
     def forward(self, pos: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         """
-        Compute relative positional bias for attention.
+        Compute relative positional encoding for attention.
         
         Args:
             pos: (N, 3) point positions
             idx: (N, k) neighbor indices
         
         Returns:
-            (N, num_heads, k) relative positional bias
+            (N, k, num_heads, head_dim) relative positional encoding
         """
         N, k = idx.shape
         
         # Get neighbor positions: (N, k, 3)
         neighbor_pos = pos[idx]
         
-        # Compute relative positions: (N, k, 3)
-        rel_pos = neighbor_pos - pos.unsqueeze(1)
+        # Compute relative positions: (N, k, 3)  [pi - pj in paper]
+        rel_pos = pos.unsqueeze(1) - neighbor_pos
         
-        # Encode: (N, k, num_heads) -> (N, num_heads, k)
-        bias = self.pos_enc(rel_pos).permute(0, 2, 1)
+        # Encode: (N, k, embed_dim) -> (N, k, num_heads, head_dim)
+        encoding = self.pos_enc(rel_pos)
+        encoding = encoding.view(N, k, self.num_heads, self.head_dim)
         
-        return bias
+        return encoding
 
 
 class LocalAttention(nn.Module):
     """
-    Local self-attention operating on k-nearest neighbors.
-    Includes relative positional encoding for spatial awareness.
+    Vector self-attention operating on k-nearest neighbors.
+    
+    Following Point Transformer paper (Eq. 3):
+    yi = Σ ρ(γ(φ(xi) - ψ(xj) + δ)) ⊙ (α(xj) + δ)
+    
+    Key differences from scalar attention:
+    - Uses subtraction relation instead of dot-product
+    - Attention weights are vectors (per-channel) not scalars
+    - Position encoding added to both attention and value branches
     """
     def __init__(self, embed_dim: int, num_heads: int = 8, k: int = 16, dropout: float = 0.1):
         super().__init__()
@@ -266,12 +151,20 @@ class LocalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.k = k
-        self.scale = self.head_dim ** -0.5
         
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        # φ, ψ, α projections (linear layers in the paper)
+        self.phi = nn.Linear(embed_dim, embed_dim)  # query transform
+        self.psi = nn.Linear(embed_dim, embed_dim)  # key transform  
+        self.alpha = nn.Linear(embed_dim, embed_dim)  # value transform
         self.o_proj = nn.Linear(embed_dim, embed_dim)
+        
+        # γ: MLP that produces attention vectors from subtraction + position
+        # Paper: "two linear layers and one ReLU nonlinearity"
+        self.gamma = nn.Sequential(
+            nn.Linear(self.head_dim, self.head_dim),
+            nn.ReLU(),
+            nn.Linear(self.head_dim, self.head_dim),
+        )
         
         self.rel_pos = RelativePositionalEncoding(embed_dim, num_heads)
         self.dropout = nn.Dropout(dropout)
@@ -289,25 +182,38 @@ class LocalAttention(nn.Module):
         """
         N, C = x.shape
         k = idx.shape[1]
+        H, D = self.num_heads, self.head_dim
         
-        # Compute Q, K, V
-        q = self.q_proj(x).view(N, self.num_heads, self.head_dim)  # (N, H, D)
-        k_feat = self.k_proj(x)[idx].view(N, k, self.num_heads, self.head_dim)  # (N, k, H, D)
-        v = self.v_proj(x)[idx].view(N, k, self.num_heads, self.head_dim)  # (N, k, H, D)
+        # φ(xi): query features (N, H, D)
+        phi_x = self.phi(x).view(N, H, D)
         
-        # Attention scores: (N, H, k)
-        attn = torch.einsum('nhd,nkhd->nhk', q, k_feat) * self.scale
+        # ψ(xj): key features for neighbors (N, k, H, D)
+        psi_x = self.psi(x)[idx].view(N, k, H, D)
         
-        # Add relative positional bias
-        pos_bias = self.rel_pos(pos, idx)  # (N, H, k)
-        attn = attn + pos_bias
+        # α(xj): value features for neighbors (N, k, H, D)
+        alpha_x = self.alpha(x)[idx].view(N, k, H, D)
         
-        # Softmax and dropout
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
+        # δ: relative positional encoding (N, k, H, D)
+        delta = self.rel_pos(pos, idx)
         
-        # Aggregate: (N, H, D)
-        out = torch.einsum('nhk,nkhd->nhd', attn, v)
+        # Subtraction relation: φ(xi) - ψ(xj) + δ
+        # Expand phi_x to (N, k, H, D) for subtraction
+        relation = phi_x.unsqueeze(1) - psi_x + delta  # (N, k, H, D)
+        
+        # γ: MLP to produce attention vectors (N, k, H, D)
+        # Apply γ per head (process last dimension)
+        attn_vectors = self.gamma(relation)  # (N, k, H, D)
+        
+        # ρ: Softmax normalization over neighbors (k dimension)
+        # For vector attention, we normalize each channel independently
+        attn_weights = F.softmax(attn_vectors, dim=1)  # (N, k, H, D)
+        attn_weights = self.dropout(attn_weights)
+        
+        # Add position encoding to values: α(xj) + δ
+        values = alpha_x + delta  # (N, k, H, D)
+        
+        # Element-wise multiplication and sum: Σ attn ⊙ values
+        out = (attn_weights * values).sum(dim=1)  # (N, H, D)
         out = out.reshape(N, C)
         
         # Output projection with residual
@@ -418,7 +324,7 @@ class PointTransformerBlock(nn.Module):
             num_global = max(int(N * self.global_ratio), 64)
             num_global = min(num_global, N)
             
-            # Random sampling for global attention anchors
+            # Random sampling for global attention anchors TODO: replace with FPS for better coverage maybe?
             global_idx = torch.randperm(N, device=x.device)[:num_global]
             x_global_in = x_local[global_idx]
             
