@@ -68,11 +68,25 @@ def segment_csr(src: torch.Tensor, indptr: torch.Tensor, reduce: str = "sum") ->
     """
     num_segments = indptr.shape[0] - 1
     
-    # Create segment indices for each element
-    # segment_ids[j] = i means src[j] belongs to segment i
+    if num_segments == 0:
+        # Edge case: no segments
+        return torch.zeros((0, *src.shape[1:]), dtype=src.dtype, device=src.device)
+    
+    if src.shape[0] == 0:
+        # Edge case: no source elements
+        return torch.zeros((num_segments, *src.shape[1:]), dtype=src.dtype, device=src.device)
+    
+    # Create segment indices for each element using vectorized approach
+    # This replaces the slow Python loop
     segment_ids = torch.zeros(src.shape[0], dtype=torch.long, device=src.device)
-    for i in range(num_segments):
-        segment_ids[indptr[i]:indptr[i+1]] = i
+    
+    # Vectorized segment ID assignment
+    # Create a range tensor and use searchsorted to find segment for each index
+    indices = torch.arange(src.shape[0], device=src.device)
+    segment_ids = torch.searchsorted(indptr[1:], indices, right=True)
+    
+    # Clamp to valid range (handles edge cases)
+    segment_ids = segment_ids.clamp(0, num_segments - 1)
     
     # Handle different reduction types
     if reduce == "sum":
@@ -84,15 +98,11 @@ def segment_csr(src: torch.Tensor, indptr: torch.Tensor, reduce: str = "sum") ->
         counts = (indptr[1:] - indptr[:-1]).float().view(-1, *([1] * (src.ndim - 1)))
         out = out / counts.clamp(min=1)
     elif reduce == "max":
-        out = torch.full((num_segments, *src.shape[1:]), float('-inf'), dtype=src.dtype, device=src.device)
-        out.scatter_reduce_(0, segment_ids.view(-1, *([1] * (src.ndim - 1))).expand_as(src), src, reduce="amax")
-        # Handle empty segments
-        out = torch.where(out == float('-inf'), torch.zeros_like(out), out)
+        out = torch.zeros(num_segments, *src.shape[1:], dtype=src.dtype, device=src.device)
+        out.scatter_reduce_(0, segment_ids.view(-1, *([1] * (src.ndim - 1))).expand_as(src), src, reduce="amax", include_self=False)
     elif reduce == "min":
-        out = torch.full((num_segments, *src.shape[1:]), float('inf'), dtype=src.dtype, device=src.device)
-        out.scatter_reduce_(0, segment_ids.view(-1, *([1] * (src.ndim - 1))).expand_as(src), src, reduce="amin")
-        # Handle empty segments
-        out = torch.where(out == float('inf'), torch.zeros_like(out), out)
+        out = torch.zeros(num_segments, *src.shape[1:], dtype=src.dtype, device=src.device)
+        out.scatter_reduce_(0, segment_ids.view(-1, *([1] * (src.ndim - 1))).expand_as(src), src, reduce="amin", include_self=False)
     else:
         raise ValueError(f"Unknown reduce type: {reduce}")
     
