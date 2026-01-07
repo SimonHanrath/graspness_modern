@@ -63,7 +63,7 @@ class GraspNetDataset(Dataset):
         self._collision_cache_maxsize = 5  # Keep at most 5 scenes in cache (~900MB)
 
         if split == 'train':
-            self.sceneIds = list(range(0,10))
+            self.sceneIds = list(range(0,100))
         elif split == 'val':
             self.sceneIds = list(range(109, 110))
         elif split == 'test':
