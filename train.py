@@ -43,6 +43,8 @@ parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size 
 parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 18]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
+parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for AdamW [default: 0.0, use 0.05 for PTv3]')
+parser.add_argument('--use_adamw', action='store_true', default=False, help='Use AdamW optimizer instead of Adam (recommended for transformers)')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
 parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
@@ -121,8 +123,12 @@ def create_model_and_optimizer():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
 
-    # Load the Adam optimizer
-    optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
+    # Select optimizer: AdamW for transformers (PTv3), Adam for CNNs (ResUNet)
+    if cfgs.use_adamw:
+        optimizer = optim.AdamW(net.parameters(), lr=cfgs.learning_rate, weight_decay=cfgs.weight_decay)
+        log_string(f"Using AdamW optimizer with lr={cfgs.learning_rate}, weight_decay={cfgs.weight_decay}")
+    else:
+        optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
 
     # Initialize GradScaler for AMP (to prevent small gradients from underflowing to zero)
     scaler = GradScaler(enabled=cfgs.use_amp and device.type == 'cuda')
@@ -143,12 +149,14 @@ def create_model_and_optimizer():
 
 
 def get_current_lr(epoch):
+    """Compute learning rate with manual step decay."""
     lr = cfgs.learning_rate
     lr = lr * (0.95 ** epoch)
     return lr
 
 
 def adjust_learning_rate(optimizer, epoch):
+    """Adjust learning rate with step decay."""
     lr = get_current_lr(epoch)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr

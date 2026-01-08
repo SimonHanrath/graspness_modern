@@ -37,50 +37,22 @@ class GraspNet(nn.Module):
         #self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         #self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         
-        # Point Transformer V3 backbone - Small config optimized for GraspNet
-        # 
-        # Design rationale for grasp detection on tabletop scenes:
-        # - Workspace: ~1.2m x 1.2m x 0.5m, voxel size 5mm → ~240x240x100 voxels
-        # - Task: Dense per-point prediction requiring local geometry understanding
-        # - Dataset: ~25k samples (100 scenes × 256 views) - modest size
-        #
-        # Architecture choices:
-        # - patch_size=64: 5mm × 64 = 32cm attention radius, covers object context
-        # - 5 stages with stride 2: 16× downsample, matches proven ResUNet design
-        # - Narrow channels (32→256): Sufficient for local geometry, prevents overfitting
-        # - 7 encoder blocks: Similar capacity to ResUNet14D's 8 blocks
-        # - 2 serialization orders: Sufficient for small tabletop scenes
-        # - drop_path=0.1: Light regularization for smaller model
-        #
-        # Target: ~12-15M params (comparable to ResUNet14D's 14.6M)
+        # Point Transformer V3 backbone (from Pointcept)
+        # PTv3 paper default config for indoor scenes
         self.backbone = PointTransformerV3EncoderFullRes(
-            in_channels=3,
+            in_channels=3, 
             out_channels=self.seed_feature_dim,
-            # Serialization: 2 orders sufficient for small scenes
-            order=("z", "z-trans"),
+            # PTv3 paper config - heavy bottleneck, wider channels
+            enc_depths=(2, 2, 2, 6, 2),
+            enc_channels=(48, 96, 192, 384, 512),
+            enc_num_head=(3, 6, 12, 24, 32),
+            enc_patch_size=(48, 48, 48, 48, 48),
             stride=(2, 2, 2, 2),
-            # Encoder: 7 blocks total, conservative channel growth
-            enc_depths=(1, 1, 2, 2, 1),
-            enc_channels=(32, 64, 128, 192, 256),
-            enc_num_head=(2, 4, 8, 12, 16),
-            enc_patch_size=(64, 64, 64, 64, 64),
-            # Decoder: 5 blocks, similar to ResUNet decoder
-            dec_depths=(1, 1, 2, 1),
-            dec_channels=(48, 64, 96, 192),
-            dec_num_head=(3, 4, 6, 12),
-            dec_patch_size=(64, 64, 64, 64),
-            mlp_ratio=4,
-            qkv_bias=True,
-            qk_scale=None,
-            attn_drop=0.0,
-            proj_drop=0.0,
-            drop_path=0.1,  # Light regularization
-            pre_norm=True,
-            shuffle_orders=True,
-            enable_rpe=False,
-            enable_flash=False,
-            upcast_attention=False,
-            upcast_softmax=False,
+            dec_depths=(2, 2, 2, 2),
+            dec_channels=(192, 192, 192, 384),  # Plateau decoder (like ResUNet): 192→512 final projection
+            dec_num_head=(12, 12, 12, 24),      # Adjusted heads for 192 channels (must divide evenly)
+            dec_patch_size=(48, 48, 48, 48),
+            enable_flash=False,  # Disable flash attention for compatibility
         )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)

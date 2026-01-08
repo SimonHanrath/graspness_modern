@@ -793,48 +793,20 @@ class PointTransformerV3EncoderFullRes(PointModule):
         ... (same as PointTransformerV3Encoder)
     """
     
-    # Default config matching NuScenes pretrained weights
-    # From: models/pointcept/config.py
-    PRETRAINED_CONFIG = dict(
-        order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        stride=(2, 2, 2, 2),
-        enc_depths=(2, 2, 2, 6, 2),
-        enc_channels=(32, 64, 128, 256, 512),
-        enc_num_head=(2, 4, 8, 16, 32),
-        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_depths=(2, 2, 2, 2),
-        dec_channels=(64, 64, 128, 256),
-        dec_num_head=(4, 4, 8, 16),
-        dec_patch_size=(1024, 1024, 1024, 1024),
-        mlp_ratio=4,
-        qkv_bias=True,
-        qk_scale=None,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        drop_path=0.3,
-        pre_norm=True,
-        shuffle_orders=True,
-        enable_rpe=False,
-        enable_flash=False,  # Disabled for compatibility
-        upcast_attention=False,
-        upcast_softmax=False,
-        backbone_out_channels=64,  # Backbone output before task head
-    )
-    
     def __init__(
         self,
         in_channels=3,
         out_channels=512,
-        order=("z", "z-trans", "hilbert", "hilbert-trans"),
+        order=("z", "z-trans"),
         stride=(2, 2, 2, 2),
         enc_depths=(2, 2, 2, 6, 2),
         enc_channels=(32, 64, 128, 256, 512),
         enc_num_head=(2, 4, 8, 16, 32),
-        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        enc_patch_size=(48, 48, 48, 48, 48),
         dec_depths=(2, 2, 2, 2),
         dec_channels=(64, 64, 128, 256),
         dec_num_head=(4, 4, 8, 16),
-        dec_patch_size=(1024, 1024, 1024, 1024),
+        dec_patch_size=(48, 48, 48, 48),
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,
@@ -844,10 +816,9 @@ class PointTransformerV3EncoderFullRes(PointModule):
         pre_norm=True,
         shuffle_orders=True,
         enable_rpe=False,
-        enable_flash=False,
+        enable_flash=True,
         upcast_attention=False,
         upcast_softmax=False,
-        pretrained_path=None,
     ):
         super().__init__()
         self.num_stages = len(enc_depths)
@@ -977,95 +948,6 @@ class PointTransformerV3EncoderFullRes(PointModule):
         # Output projection
         final_dec_channels = dec_channels[0]
         self.output_proj = nn.Linear(final_dec_channels, out_channels)
-        
-        # Load pretrained weights if provided
-        if pretrained_path is not None:
-            self.load_pretrained(pretrained_path)
-
-    def load_pretrained(self, checkpoint_path: str, strict: bool = False):
-        """
-        Load pretrained weights from a Pointcept segmentation checkpoint.
-        
-        Handles:
-        - DDP 'module.' prefix removal
-        - 'backbone.' prefix extraction (ignoring seg_head)
-        - Input channel mismatch (pretrained uses 4, we use 3)
-        
-        Args:
-            checkpoint_path: Path to .pth checkpoint file
-            strict: If False, ignore missing/unexpected keys (default: False)
-        """
-        import os
-        print(f"Loading pretrained weights from: {checkpoint_path}")
-        
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        
-        # Extract state dict from checkpoint
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
-        
-        # Process keys: remove 'module.' prefix (from DDP) and extract 'backbone.' part
-        new_state_dict = {}
-        skipped_keys = []
-        
-        for key, value in state_dict.items():
-            # Remove 'module.' prefix if present (from DistributedDataParallel)
-            if key.startswith('module.'):
-                key = key[7:]
-            
-            # Only keep backbone weights, skip seg_head
-            if key.startswith('backbone.'):
-                new_key = key[9:]  # Remove 'backbone.' prefix
-                new_state_dict[new_key] = value
-            else:
-                skipped_keys.append(key)
-        
-        if skipped_keys:
-            print(f"  Skipped {len(skipped_keys)} non-backbone keys (e.g., seg_head)")
-        
-        # Handle input channel mismatch: pretrained has 4 channels (coord+strength), we use 3
-        # The embedding conv weight has shape (out_channels, kernel, kernel, kernel, in_channels)
-        emb_key = 'embedding.stem.conv.weight'
-        if emb_key in new_state_dict:
-            pretrained_emb = new_state_dict[emb_key]
-            pretrained_in_ch = pretrained_emb.shape[-1]
-            our_in_ch = self.embedding.stem.conv.in_channels
-            
-            if pretrained_in_ch != our_in_ch:
-                print(f"  Adapting embedding: pretrained has {pretrained_in_ch} input channels, we use {our_in_ch}")
-                # Take first 'our_in_ch' channels from pretrained weights
-                # Shape: (out_ch, k, k, k, in_ch) -> slice last dim
-                new_state_dict[emb_key] = pretrained_emb[..., :our_in_ch].contiguous()
-        
-        # Remove output_proj weights if present (we have different output dim)
-        keys_to_remove = [k for k in new_state_dict.keys() if 'output_proj' in k]
-        for k in keys_to_remove:
-            del new_state_dict[k]
-            print(f"  Removed task-specific key: {k}")
-        
-        # Load weights
-        missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=strict)
-        
-        # Report results
-        print(f"  Loaded {len(new_state_dict)} pretrained parameters")
-        if missing_keys:
-            # Filter out expected missing keys (output_proj)
-            truly_missing = [k for k in missing_keys if 'output_proj' not in k]
-            if truly_missing:
-                print(f"  Missing keys ({len(truly_missing)}): {truly_missing[:5]}...")
-        if unexpected_keys:
-            print(f"  Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:5]}...")
-        
-        print("  Pretrained weights loaded successfully!")
-        return self
 
     def forward(self, x: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
         """
