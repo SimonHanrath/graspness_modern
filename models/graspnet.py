@@ -22,6 +22,9 @@ from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GR
 from utils.label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
 from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operation
 
+# Path to pretrained PTv3 weights (NuScenes)
+PRETRAINED_PTV3_PATH = os.path.join(BASE_DIR, 'pointcept', 'model_best.pth')
+
 
 class GraspNet(nn.Module):
     def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True):
@@ -38,21 +41,36 @@ class GraspNet(nn.Module):
         #self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         
         # Point Transformer V3 backbone (from Pointcept)
-        # PTv3 paper default config for indoor scenes
+        # Using config that matches pretrained NuScenes weights
+        #TODO: we define this multiple times, have one common source of truth here
         self.backbone = PointTransformerV3EncoderFullRes(
-            in_channels=3, 
+            in_channels=3,  # We use 3 (xyz or features), pretrained used 4 (handled in load)
             out_channels=self.seed_feature_dim,
-            # PTv3 paper config - heavy bottleneck, wider channels
-            enc_depths=(2, 2, 2, 6, 2),
-            enc_channels=(48, 96, 192, 384, 512),
-            enc_num_head=(3, 6, 12, 24, 32),
-            enc_patch_size=(48, 48, 48, 48, 48),
+            # Config matching pretrained weights (from models/pointcept/config.py)
+            order=("z", "z-trans", "hilbert", "hilbert-trans"),
             stride=(2, 2, 2, 2),
+            enc_depths=(2, 2, 2, 6, 2),
+            enc_channels=(32, 64, 128, 256, 512),
+            enc_num_head=(2, 4, 8, 16, 32),
+            enc_patch_size=(1024, 1024, 1024, 1024, 1024),
             dec_depths=(2, 2, 2, 2),
-            dec_channels=(48, 96, 192, 384),
-            dec_num_head=(3, 6, 12, 24),
-            dec_patch_size=(48, 48, 48, 48),
-            enable_flash=False,  # Disable flash attention for compatibility
+            dec_channels=(64, 64, 128, 256),
+            dec_num_head=(4, 4, 8, 16),
+            dec_patch_size=(1024, 1024, 1024, 1024),
+            mlp_ratio=4,
+            qkv_bias=True,
+            qk_scale=None,
+            attn_drop=0.0,
+            proj_drop=0.0,
+            drop_path=0.3,
+            pre_norm=True,
+            shuffle_orders=True,
+            enable_rpe=False,
+            enable_flash=False,  # Disabled for compatibility
+            upcast_attention=False,
+            upcast_softmax=False,
+            # Load pretrained weights
+            pretrained_path=PRETRAINED_PTV3_PATH if os.path.exists(PRETRAINED_PTV3_PATH) else None,
         )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
