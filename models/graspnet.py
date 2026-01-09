@@ -38,20 +38,26 @@ class GraspNet(nn.Module):
         #self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         
         # Point Transformer V3 backbone (from Pointcept)
-        # PTv3 paper default config for indoor scenes
+        # Configuration sized for GraspNet-1Billion dataset:
+        # - Tabletop scenes with ~10 objects
+        # - Input: ~15K points -> ~3K-8K voxels after quantization (voxel_size=0.005m)
+        # - Scene extent: ~160x160x80 voxels (0.8m x 0.8m x 0.4m)
+        # - Target: ~13M params to match ResUNet14D baseline (~15M)
         self.backbone = PointTransformerV3EncoderFullRes(
             in_channels=3, 
             out_channels=self.seed_feature_dim,
-            # PTv3 paper config - heavy bottleneck, wider channels
-            enc_depths=(2, 2, 2, 6, 2),
-            enc_channels=(48, 96, 192, 384, 512),
-            enc_num_head=(3, 6, 12, 24, 32),
-            enc_patch_size=(48, 48, 48, 48, 48),
+            # Encoder: shallow (6 blocks) - GraspNet scenes are simpler than ScanNet
+            enc_depths=(1, 1, 1, 2, 1),
+            enc_channels=(32, 64, 128, 256, 256),
+            enc_num_head=(2, 4, 8, 16, 16),
+            enc_patch_size=(64, 64, 64, 64, 64),  # Larger patches for small scenes
             stride=(2, 2, 2, 2),
-            dec_depths=(2, 2, 2, 2),
-            dec_channels=(192, 192, 192, 384),  # Plateau decoder (like ResUNet): 192→512 final projection
-            dec_num_head=(12, 12, 12, 24),      # Adjusted heads for 192 channels (must divide evenly)
-            dec_patch_size=(48, 48, 48, 48),
+            # Decoder: wider output (64ch) for better dense prediction
+            dec_depths=(1, 1, 1, 1),
+            dec_channels=(64, 96, 128, 256),
+            dec_num_head=(4, 6, 8, 16),
+            dec_patch_size=(64, 64, 64, 64),
+            drop_path=0.1,  # Lower drop_path for faster convergence
             enable_flash=False,  # Disable flash attention for compatibility
         )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
