@@ -16,6 +16,7 @@ sys.path.append(ROOT_DIR)
 from models.backbone_resunet14 import SPconvUNet14D
 from models.backbone_pointnet_transformer import PointNetTransformer14D
 from models.pointcept.backbone_pointnet_transformer_pointcept import PointTransformerV3EncoderFullRes
+from models.backbone_pointnet2 import PointNet2Backbone, PointNet2BackboneLight
 
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
@@ -24,7 +25,7 @@ from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operati
 
 
 class GraspNet(nn.Module):
-    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True):
+    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, backbone='transformer'):
         super().__init__()
         self.is_training = is_training
         self.seed_feature_dim = seed_feat_dim
@@ -33,33 +34,27 @@ class GraspNet(nn.Module):
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
 
-        # here we can swap in different backbones
-        #self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
-        #self.backbone = PointNetTransformer14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
-        
-        # Point Transformer V3 backbone (from Pointcept)
-        # Configuration sized for GraspNet-1Billion dataset:
-        # - Tabletop scenes with ~10 objects
-        # - Input: ~15K points -> ~3K-8K voxels after quantization (voxel_size=0.005m)
-        # - Scene extent: ~160x160x80 voxels (0.8m x 0.8m x 0.4m)
-        # - Target: ~13M params to match ResUNet14D baseline (~15M)
-        self.backbone = PointTransformerV3EncoderFullRes(
-            in_channels=3, 
-            out_channels=self.seed_feature_dim,
-            # Encoder: shallow (6 blocks) - GraspNet scenes are simpler than ScanNet
-            enc_depths=(1, 1, 1, 2, 1),
-            enc_channels=(32, 64, 128, 256, 256),
-            enc_num_head=(2, 4, 8, 16, 16),
-            enc_patch_size=(64, 64, 64, 64, 64),  # Larger patches for small scenes
-            stride=(2, 2, 2, 2),
-            # Decoder: wider output (64ch) for better dense prediction
-            dec_depths=(1, 1, 1, 1),
-            dec_channels=(64, 96, 128, 256),
-            dec_num_head=(4, 6, 8, 16),
-            dec_patch_size=(64, 64, 64, 64),
-            drop_path=0.1,  # Lower drop_path for faster convergence
-            enable_flash=False,  # Disable flash attention for compatibility
-        )
+        # Select backbone architecture
+        if backbone == 'resunet':
+            self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        elif backbone == 'pointnet2':
+            self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
+        else:  # transformer (default)
+            self.backbone = PointTransformerV3EncoderFullRes(
+                in_channels=3, 
+                out_channels=self.seed_feature_dim,
+                enc_depths=(1, 1, 1, 2, 1),
+                enc_channels=(32, 64, 128, 256, 256),
+                enc_num_head=(2, 4, 8, 16, 16),
+                enc_patch_size=(64, 64, 64, 64, 64),
+                stride=(2, 2, 2, 2),
+                dec_depths=(1, 1, 1, 1),
+                dec_channels=(64, 96, 128, 256),
+                dec_num_head=(4, 6, 8, 16),
+                dec_patch_size=(64, 64, 64, 64),
+                drop_path=0.1,
+                enable_flash=False,
+            )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)

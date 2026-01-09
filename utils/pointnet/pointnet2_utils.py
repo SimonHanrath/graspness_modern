@@ -115,22 +115,23 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
     B, N, D = p1.shape
     M = p2.shape[1]
     
-    # For small problems, use optimized torch.cdist
-    if N * M < 100000:  # Threshold to avoid OOM
+    # Memory-aware chunking: limit peak memory to ~500MB per chunk
+    # Each distance matrix element = 4 bytes (float32)
+    # Target: chunk_size * M * 4 bytes < 500MB
+    max_elements = 125_000_000  # 500MB / 4 bytes
+    chunk_size = max(1, min(N, max_elements // M))
+    
+    # For small problems, process in one go
+    if N <= chunk_size:
         p1_f = p1.float()
         p2_f = p2.float()
-        
-        # torch.cdist is highly optimized
-        dists = torch.cdist(p1_f, p2_f, p=2.0) ** 2  # (B, N, M) - convert back to squared
-        
+        dists = torch.cdist(p1_f, p2_f, p=2.0) ** 2
         knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False, sorted=True)
         return knn_dists, knn_idx
     
-    # For large problems, use chunked processing
-    chunk_size = max(1, 50000 // M)  # Process ~50k distances at a time
+    # Chunked processing for large point clouds
     all_dists = []
     all_idx = []
-    
     p2_f = p2.float()
     
     for i in range(0, N, chunk_size):
@@ -138,10 +139,10 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         p1_chunk = p1[:, i:end_i].float()
         
         dists_chunk = torch.cdist(p1_chunk, p2_f, p=2.0) ** 2
-        
         knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=True)
         all_dists.append(knn_dists)
         all_idx.append(knn_idx)
+        del dists_chunk  # Free memory immediately
     
     return torch.cat(all_dists, dim=1), torch.cat(all_idx, dim=1)
 
@@ -171,12 +172,13 @@ def three_interpolate(features: torch.Tensor,
                       idx: torch.Tensor,
                       weight: torch.Tensor) -> torch.Tensor:
     """
+    Memory-efficient feature interpolation using 3 nearest neighbors.
+    
     features: (B, C, M)   — source features
     idx:      (B, N, 3)   — neighbor indices into M
     weight:   (B, N, 3)   — weights per neighbor (typically sum to 1)
     returns:  (B, C, N)   — interpolated features at N queries
     """
-
     assert idx.dtype == torch.long
     assert features.device == idx.device == weight.device
 
@@ -184,17 +186,24 @@ def three_interpolate(features: torch.Tensor,
     _, N, K = idx.shape
     assert K == 3
 
-    idx_exp   = idx.unsqueeze(1).expand(-1, C, -1, -1)        # (B, C, N, 3)
-    feats_exp = features.unsqueeze(2).expand(-1, -1, N, -1)   # (B, C, N, M)
-    gathered  = torch.gather(feats_exp, dim=3, index=idx_exp) # (B, C, N, 3)
-
-    out = (gathered * weight.unsqueeze(1)).sum(dim=3)
+    # Memory-efficient: gather only the 3 neighbors per query point
+    # Instead of expanding features to (B, C, N, M), we index directly
+    # idx shape: (B, N, 3) -> reshape to (B, N*3) for gather, then reshape back
+    
+    idx_flat = idx.view(B, N * K)  # (B, N*3)
+    idx_exp = idx_flat.unsqueeze(1).expand(-1, C, -1)  # (B, C, N*3)
+    
+    gathered_flat = torch.gather(features, dim=2, index=idx_exp)  # (B, C, N*3)
+    gathered = gathered_flat.view(B, C, N, K)  # (B, C, N, 3)
+    
+    # Weighted sum
+    out = (gathered * weight.unsqueeze(1)).sum(dim=3)  # (B, C, N)
     return out
 
 
 def grouping_operation(features: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
     """
-    Group features by indices.
+    Memory-efficient grouping of features by indices.
 
     Args:
         features: (B, C, N) float tensor
@@ -207,13 +216,15 @@ def grouping_operation(features: torch.Tensor, idx: torch.Tensor) -> torch.Tenso
     assert features.device == idx.device
 
     B, C, N = features.shape
-    B2, npoint, nsample = idx.shape
-    assert B == B2
+    _, npoint, nsample = idx.shape
 
-    feats_exp = features.unsqueeze(2).expand(-1, -1, npoint, -1)    # (B, C, npoint, N)
-    idx_exp   = idx.unsqueeze(1).expand(-1, C, -1, -1)              # (B, C, npoint, nsample)
-
-    grouped = torch.gather(feats_exp, dim=3, index=idx_exp)         # (B, C, npoint, nsample)
+    # Memory-efficient: flatten idx, gather, then reshape
+    idx_flat = idx.view(B, npoint * nsample)  # (B, npoint*nsample)
+    idx_exp = idx_flat.unsqueeze(1).expand(-1, C, -1)  # (B, C, npoint*nsample)
+    
+    gathered_flat = torch.gather(features, dim=2, index=idx_exp)  # (B, C, npoint*nsample)
+    grouped = gathered_flat.view(B, C, npoint, nsample)  # (B, C, npoint, nsample)
+    
     return grouped
 
 
