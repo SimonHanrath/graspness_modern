@@ -57,6 +57,8 @@ parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
 parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'pointnet2', 'resunet'],
                     help='Backbone architecture [default: transformer]')
+parser.add_argument('--grad_clip', type=float, default=0.0,
+                    help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
 
 
 cfgs = parser.parse_args()
@@ -127,7 +129,32 @@ def create_model_and_optimizer():
 
     # Load optimizer (use AdamW if weight_decay > 0, otherwise Adam)
     if cfgs.weight_decay > 0:
-        optimizer = optim.AdamW(net.parameters(), lr=cfgs.learning_rate, weight_decay=cfgs.weight_decay)
+        # For transformers/deep nets, don't apply weight decay to:
+        # 1. Normalization layer parameters (LayerNorm, BatchNorm) - these are scale/shift params
+        # 2. All bias terms - regularizing biases can destabilize training
+        # This prevents loss spikes that occur when weight decay is applied uniformly
+        decay_params = []
+        no_decay_params = []
+        
+        for name, param in net.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Check if this is a normalization parameter or any bias
+            # 'bn' catches BatchNorm modules named like 'sa1.mlps.0.0.bn.weight'
+            is_norm = any(n in name.lower() for n in ['layernorm', 'layer_norm', 'batchnorm', 'batch_norm', '.bn.', '.norm.', '.norm1.', '.norm2.'])
+            is_bias = name.endswith('.bias')
+            
+            if is_norm or is_bias:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+        
+        param_groups = [
+            {'params': decay_params, 'weight_decay': cfgs.weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0},
+        ]
+        
+        optimizer = optim.AdamW(param_groups, lr=cfgs.learning_rate)
         log_string(f"Using AdamW optimizer with weight_decay={cfgs.weight_decay}")
     else:
         optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
@@ -188,6 +215,12 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
         
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()
+        
+        # Gradient clipping (important for transformer stability)
+        if cfgs.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), cfgs.grad_clip)
+        
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()
