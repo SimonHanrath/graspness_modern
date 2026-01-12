@@ -55,10 +55,14 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'pointnet2', 'resunet'],
-                    help='Backbone architecture [default: transformer]')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet'],
+                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
+parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
+                    help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
+parser.add_argument('--enable_flash', action='store_true', default=False,
+                    help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
 
 
 cfgs = parser.parse_args()
@@ -123,7 +127,13 @@ def create_dataloaders():
 
 def create_model_and_optimizer():
     """Create model, optimizer, and scaler. Only called in main process."""
-    net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True, backbone=cfgs.backbone)
+    net = GraspNet(
+        seed_feat_dim=cfgs.seed_feat_dim, 
+        is_training=True, 
+        backbone=cfgs.backbone,
+        ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
+        enable_flash=cfgs.enable_flash,
+    )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
 

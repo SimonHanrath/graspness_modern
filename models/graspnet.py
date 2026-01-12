@@ -15,7 +15,10 @@ sys.path.append(ROOT_DIR)
 
 from models.backbone_resunet14 import SPconvUNet14D
 from models.backbone_pointnet_transformer import PointNetTransformer14D
-from models.pointcept.backbone_pointnet_transformer_pointcept import PointTransformerV3EncoderFullRes
+from models.pointcept.backbone_pointnet_transformer_pointcept import (
+    PointTransformerV3EncoderFullRes,
+    create_ptv3_backbone_grasp,
+)
 from models.backbone_pointnet2 import PointNet2Backbone, PointNet2BackboneLight
 
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
@@ -25,7 +28,16 @@ from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operati
 
 
 class GraspNet(nn.Module):
-    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, backbone='transformer'):
+    def __init__(
+        self,
+        cylinder_radius=0.05,
+        seed_feat_dim=512,
+        is_training=True,
+        backbone='transformer',
+        ptv3_pretrained_path=None,
+        use_pretrained_ptv3=False,
+        enable_flash=False,
+    ):
         super().__init__()
         self.is_training = is_training
         self.seed_feature_dim = seed_feat_dim
@@ -39,7 +51,16 @@ class GraspNet(nn.Module):
             self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'pointnet2':
             self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
-        else:  # transformer (default)
+        elif backbone == 'transformer_pretrained' or (backbone == 'transformer' and use_pretrained_ptv3):
+            # Use PTv3 backbone with pretrained Pointcept weights
+            self.backbone = create_ptv3_backbone_grasp(
+                checkpoint_path=ptv3_pretrained_path,
+                in_channels=3,
+                out_channels=self.seed_feature_dim,
+                use_pretrained=True,
+                enable_flash=enable_flash,
+            )
+        else:  # transformer (default without pretrained)
             self.backbone = PointTransformerV3EncoderFullRes(
                 in_channels=3, 
                 out_channels=self.seed_feature_dim,
@@ -53,7 +74,7 @@ class GraspNet(nn.Module):
                 dec_num_head=(4, 6, 8, 16),
                 dec_patch_size=(64, 64, 64, 64),
                 drop_path=0.1,
-                enable_flash=False,
+                enable_flash=enable_flash,
             )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)

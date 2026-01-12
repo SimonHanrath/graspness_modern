@@ -1052,3 +1052,281 @@ class SerializedUnpooling(PointModule):
         parent = self.proj_skip(parent)
         parent.feat = parent.feat + point.feat[inverse]
         return parent
+
+
+# =============================================================================
+# Pretrained Weight Loading
+# =============================================================================
+
+def load_pointcept_pretrained_backbone(
+    model: PointTransformerV3EncoderFullRes,
+    checkpoint_path: str,
+    strict: bool = False,
+) -> PointTransformerV3EncoderFullRes:
+    """
+    Load pretrained Pointcept backbone weights into the model.
+    
+    The pretrained checkpoint from Pointcept has keys like:
+        'module.backbone.embedding.stem.conv.weight'
+        'module.backbone.enc.enc0.block0.attn.qkv.weight'
+        ...
+    
+    We need to strip 'module.backbone.' prefix to match our model's state dict.
+    
+    Args:
+        model: PointTransformerV3EncoderFullRes instance to load weights into
+        checkpoint_path: Path to the .pth checkpoint file
+        strict: If True, raise error on missing/unexpected keys. If False, only load matching keys.
+    
+    Returns:
+        The model with loaded weights
+    """
+    import os
+    
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    
+    # Get state dict from checkpoint
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    else:
+        state_dict = checkpoint
+    
+    # Transform keys: strip 'module.backbone.' prefix
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        # Skip seg_head keys - we don't need them for backbone
+        if 'seg_head' in key:
+            continue
+        
+        # Strip prefix
+        if key.startswith('module.backbone.'):
+            new_key = key[len('module.backbone.'):]
+        elif key.startswith('backbone.'):
+            new_key = key[len('backbone.'):]
+        elif key.startswith('module.'):
+            new_key = key[len('module.'):]
+        else:
+            new_key = key
+        
+        new_state_dict[new_key] = value
+    
+    # Get model's current state dict
+    model_state_dict = model.state_dict()
+    
+    # Filter to only matching keys
+    matched_keys = []
+    missing_keys = []
+    unexpected_keys = []
+    
+    for key in model_state_dict.keys():
+        if key in new_state_dict:
+            if model_state_dict[key].shape == new_state_dict[key].shape:
+                matched_keys.append(key)
+            else:
+                print(f"Shape mismatch for {key}: model={model_state_dict[key].shape}, checkpoint={new_state_dict[key].shape}")
+                missing_keys.append(key)
+        else:
+            missing_keys.append(key)
+    
+    for key in new_state_dict.keys():
+        if key not in model_state_dict:
+            unexpected_keys.append(key)
+    
+    # Load matching weights
+    filtered_state_dict = {k: new_state_dict[k] for k in matched_keys}
+    model.load_state_dict(filtered_state_dict, strict=False)
+    
+    print(f"Loaded {len(matched_keys)} / {len(model_state_dict)} parameters from pretrained checkpoint")
+    if missing_keys:
+        print(f"Missing keys ({len(missing_keys)}): {missing_keys[:10]}..." if len(missing_keys) > 10 else f"Missing keys: {missing_keys}")
+    if unexpected_keys:
+        print(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:10]}..." if len(unexpected_keys) > 10 else f"Unexpected keys: {unexpected_keys}")
+    
+    if strict and (missing_keys or unexpected_keys):
+        raise RuntimeError(f"Strict loading failed: {len(missing_keys)} missing, {len(unexpected_keys)} unexpected keys")
+    
+    return model
+
+
+def create_ptv3_backbone_from_pretrained(
+    checkpoint_path: str,
+    out_channels: int = 512,
+    freeze_backbone: bool = False,
+    **override_kwargs,
+) -> PointTransformerV3EncoderFullRes:
+    """
+    Create a PTv3 backbone with architecture matching the pretrained Pointcept checkpoint.
+    
+    The pretrained model (ScanNet semantic segmentation) has:
+    - in_channels: 6 (color + normal or XYZ + color)
+    - enc_depths: (2, 2, 2, 6, 2)
+    - enc_channels: (32, 64, 128, 256, 512)
+    - enc_num_head: (2, 4, 8, 16, 32)
+    - dec_depths: (2, 2, 2, 2)
+    - dec_channels: (64, 64, 128, 256)
+    - dec_num_head: (4, 4, 8, 16)
+    
+    Args:
+        checkpoint_path: Path to the pretrained .pth file
+        out_channels: Output feature dimension (adds projection layer if different from dec output)
+        freeze_backbone: If True, freeze all backbone parameters
+        **override_kwargs: Override any default architecture parameters
+    
+    Returns:
+        PointTransformerV3EncoderFullRes with pretrained weights loaded
+    """
+    # Default config matching pretrained checkpoint
+    default_config = dict(
+        in_channels=6,
+        out_channels=out_channels,
+        order=['z', 'z-trans', 'hilbert', 'hilbert-trans'],
+        stride=(2, 2, 2, 2),
+        enc_depths=(2, 2, 2, 6, 2),
+        enc_channels=(32, 64, 128, 256, 512),
+        enc_num_head=(2, 4, 8, 16, 32),
+        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        dec_depths=(2, 2, 2, 2),
+        dec_channels=(64, 64, 128, 256),
+        dec_num_head=(4, 4, 8, 16),
+        dec_patch_size=(1024, 1024, 1024, 1024),
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        drop_path=0.3,
+        pre_norm=True,
+        shuffle_orders=True,
+        enable_rpe=False,
+        enable_flash=True,
+        upcast_attention=False,
+        upcast_softmax=False,
+    )
+    
+    # Override with user-specified kwargs
+    default_config.update(override_kwargs)
+    
+    # Create model
+    model = PointTransformerV3EncoderFullRes(**default_config)
+    
+    # Load pretrained weights
+    load_pointcept_pretrained_backbone(model, checkpoint_path, strict=False)
+    
+    # Optionally freeze backbone
+    if freeze_backbone:
+        for param in model.parameters():
+            param.requires_grad = False
+        # Unfreeze output projection if it exists and is newly added
+        if hasattr(model, 'output_proj') and isinstance(model.output_proj, nn.Linear):
+            for param in model.output_proj.parameters():
+                param.requires_grad = True
+    
+    return model
+
+
+def create_ptv3_backbone_grasp(
+    checkpoint_path: str = None,
+    in_channels: int = 3,
+    out_channels: int = 512,
+    use_pretrained: bool = True,
+    enable_flash: bool = False,
+    **kwargs,
+) -> PointTransformerV3EncoderFullRes:
+    """
+    Create a PTv3 backbone configured for grasp detection.
+    
+    This handles the input channel mismatch: pretrained model expects 6 channels
+    (RGB + normal or XYZ + RGB), but grasp detection may use 3 channels (XYZ or RGB).
+    
+    When in_channels != 6 and using pretrained weights:
+    - Creates model with 6 input channels to load pretrained weights
+    - Replaces the embedding layer with one that matches in_channels
+    - The new embedding layer is randomly initialized
+    
+    Args:
+        checkpoint_path: Path to pretrained checkpoint (None to use default location)
+        in_channels: Input feature channels (3 for XYZ/RGB, 6 for XYZ+RGB, etc.)
+        out_channels: Output feature dimension
+        use_pretrained: Whether to load pretrained weights
+        enable_flash: Enable flash attention (requires flash_attn package)
+        **kwargs: Additional architecture overrides
+    
+    Returns:
+        PointTransformerV3EncoderFullRes configured for grasp detection
+    """
+    import os
+    
+    # Default checkpoint path
+    if checkpoint_path is None:
+        checkpoint_path = os.path.join(
+            os.path.dirname(__file__), 'model_best.pth'
+        )
+    
+    if use_pretrained and os.path.exists(checkpoint_path):
+        # Load pretrained model
+        model = create_ptv3_backbone_from_pretrained(
+            checkpoint_path=checkpoint_path,
+            out_channels=out_channels,
+            enable_flash=enable_flash,
+            **kwargs,
+        )
+        
+        # Handle input channel mismatch
+        if in_channels != 6:
+            print(f"Replacing embedding layer: {6} -> {in_channels} input channels")
+            # Save the pretrained embedding parameters we can reuse
+            # (only if we're reducing channels, we can copy a subset)
+            
+            # Create new embedding with correct input channels
+            bn_layer = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
+            act_layer = nn.GELU
+            embed_channels = model.embedding.embed_channels
+            
+            new_embedding = Embedding(
+                in_channels=in_channels,
+                embed_channels=embed_channels,
+                norm_layer=bn_layer,
+                act_layer=act_layer,
+            )
+            
+            # Try to copy what we can from pretrained
+            if in_channels <= 6:
+                with torch.no_grad():
+                    # Copy first in_channels of the conv weights
+                    old_weight = model.embedding.stem.conv.weight  # [out, kD, kH, kW, in]
+                    new_embedding.stem.conv.weight.copy_(old_weight[:, :, :, :, :in_channels])
+                    # Copy norm parameters
+                    if hasattr(model.embedding.stem, 'norm'):
+                        new_embedding.stem.norm.weight.copy_(model.embedding.stem.norm.weight)
+                        new_embedding.stem.norm.bias.copy_(model.embedding.stem.norm.bias)
+                        new_embedding.stem.norm.running_mean.copy_(model.embedding.stem.norm.running_mean)
+                        new_embedding.stem.norm.running_var.copy_(model.embedding.stem.norm.running_var)
+            
+            model.embedding = new_embedding
+    else:
+        # Create model from scratch
+        model = PointTransformerV3EncoderFullRes(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            enc_depths=(2, 2, 2, 6, 2),
+            enc_channels=(32, 64, 128, 256, 512),
+            enc_num_head=(2, 4, 8, 16, 32),
+            enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+            dec_depths=(2, 2, 2, 2),
+            dec_channels=(64, 64, 128, 256),
+            dec_num_head=(4, 4, 8, 16),
+            dec_patch_size=(1024, 1024, 1024, 1024),
+            enable_flash=enable_flash,
+            **kwargs,
+        )
+        
+        if use_pretrained:
+            print(f"Warning: Pretrained checkpoint not found at {checkpoint_path}")
+    
+    return model

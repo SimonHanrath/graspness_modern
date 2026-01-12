@@ -30,6 +30,12 @@ parser.add_argument('--collision_thresh', type=float, default=0.01,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--eval', action='store_true', default=False)
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet'],
+                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights.')
+parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
+                    help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
+parser.add_argument('--enable_flash', action='store_true', default=False,
+                    help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
 cfgs = parser.parse_args()
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
@@ -52,7 +58,13 @@ def inference():
                                  num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
     print('Test dataloader length: ', len(test_dataloader))
     # Init the model
-    net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=False)
+    net = GraspNet(
+        seed_feat_dim=cfgs.seed_feat_dim, 
+        is_training=False,
+        backbone=cfgs.backbone,
+        ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
+        enable_flash=cfgs.enable_flash,
+    )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
     # Load checkpoint
