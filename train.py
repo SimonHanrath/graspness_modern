@@ -127,12 +127,8 @@ def create_model_and_optimizer():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
 
-    # Load optimizer (use AdamW if weight_decay > 0, otherwise Adam)
+    # Load optimizer (use AdamW if weight_decay > 0, otherwise Adam) # TODO weight decay is not working atm
     if cfgs.weight_decay > 0:
-        # For transformers/deep nets, don't apply weight decay to:
-        # 1. Normalization layer parameters (LayerNorm, BatchNorm) - these are scale/shift params
-        # 2. All bias terms - regularizing biases can destabilize training
-        # This prevents loss spikes that occur when weight decay is applied uniformly
         decay_params = []
         no_decay_params = []
         

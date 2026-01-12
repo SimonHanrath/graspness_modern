@@ -67,10 +67,11 @@ class PointNet2Backbone(nn.Module):
         self.fp1 = PointnetFPModule(mlp=[256 + in_channels, 256, 256])
         
         # Final projection after interpolation to all points
+        # NOTE: No ReLU here! ResUNet doesn't use final activation,
+        # allowing negative features for better discriminability in GraspableNet
         self.final_mlp = nn.Sequential(
             nn.Conv1d(256, out_channels, 1),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.BatchNorm1d(out_channels)
         )
     
     def forward(self, sparse_input: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
@@ -178,10 +179,11 @@ class PointNet2BackboneLight(nn.Module):
         self.fp2 = PointnetFPModule(mlp=[256 + 128, 128, 128])
         self.fp1 = PointnetFPModule(mlp=[128 + in_channels, 128, 128])
         
+        # NOTE: No ReLU here! ResUNet doesn't use final activation,
+        # allowing negative features for better discriminability in GraspableNet
         self.final_mlp = nn.Sequential(
             nn.Conv1d(128, out_channels, 1),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.BatchNorm1d(out_channels)
         )
     
     def forward(self, sparse_input: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
