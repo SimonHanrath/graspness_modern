@@ -63,6 +63,8 @@ parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
                     help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
 parser.add_argument('--enable_flash', action='store_true', default=False,
                     help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
+parser.add_argument('--accumulation_steps', type=int, default=1,
+                    help='Gradient accumulation steps (simulate larger batch with batch_size=1) [default: 1]')
 
 
 cfgs = parser.parse_args()
@@ -218,18 +220,22 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
         with autocast(enabled=cfgs.use_amp, device_type=device.type):
             end_points = net(batch_data_label)
             loss, end_points = get_loss(end_points)
+            # Scale loss for gradient accumulation
+            loss = loss / cfgs.accumulation_steps
         
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()
         
-        # Gradient clipping (important for transformer stability)
-        if cfgs.grad_clip > 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), cfgs.grad_clip)
-        
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad()
+        # Only step optimizer every accumulation_steps
+        if (batch_idx + 1) % cfgs.accumulation_steps == 0:
+            # Gradient clipping (important for transformer stability)
+            if cfgs.grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(net.parameters(), cfgs.grad_clip)
+            
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
         
         """# Periodic cache clearing to prevent memory fragmentation
         if (batch_idx + 1) % 100 == 0:
@@ -241,8 +247,10 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
                     stat_dict[key] = 0
                 if key not in epoch_stat_dict:
                     epoch_stat_dict[key] = 0
-                stat_dict[key] += end_points[key].item()
-                epoch_stat_dict[key] += end_points[key].item()
+                # Multiply back by accumulation_steps to get actual loss value
+                loss_value = end_points[key].item() if 'loss' not in key else end_points[key].item() * cfgs.accumulation_steps
+                stat_dict[key] += loss_value
+                epoch_stat_dict[key] += loss_value
 
         if (batch_idx + 1) % batch_interval == 0:
             log_string(' ----epoch: %03d  ---- batch: %03d ----' % (EPOCH_CNT, batch_idx + 1))

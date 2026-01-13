@@ -79,36 +79,50 @@ class PointNet2Backbone(nn.Module):
         coords = sparse_input.indices  # (M, 4) [batch, x, y, z]
         batch_size = sparse_input.batch_size
         
-        xyz = coords[:, 1:4].float()
-        batch_idx = coords[:, 0]
+        # CRITICAL: coords are voxel indices. PointNet++ needs real spatial coordinates!
+        # Dataset uses voxel_size=0.005, so multiply back to get meters
+        VOXEL_SIZE = 0.005
+        xyz = coords[:, 1:4].float() * VOXEL_SIZE
+        batch_idx = coords[:, 0].int()
         
-        # Group by batch
-        points_per_batch = [(batch_idx == b).sum().item() for b in range(batch_size)]
-        max_points = max(points_per_batch)
-        
-        # Pad to create batched tensors
-        xyz_batched = torch.zeros(batch_size, max_points, 3, device=xyz.device, dtype=xyz.dtype)
-        feats_batched = torch.zeros(batch_size, max_points, feats.shape[1], device=feats.device, dtype=feats.dtype)
-        
-        idx = 0
-        for b in range(batch_size):
-            n = points_per_batch[b]
-            xyz_batched[b, :n] = xyz[idx:idx + n]
-            feats_batched[b, :n] = feats[idx:idx + n]
-            idx += n
+        # OPTIMIZATION: Fast path for batch_size=1 (skip padding overhead)
+        if batch_size == 1:
+            xyz_batched = xyz.unsqueeze(0)  # (1, N, 3)
+            feats_batched = feats.unsqueeze(0)  # (1, N, C)
+            points_per_batch = [xyz.shape[0]]
+        else:
+            # Count points per batch (vectorized)
+            points_per_batch = torch.bincount(batch_idx, minlength=batch_size).tolist()
+            max_points = max(points_per_batch)
+            
+            # Vectorized batching using scatter
+            xyz_batched = torch.zeros(batch_size, max_points, 3, device=xyz.device, dtype=xyz.dtype)
+            feats_batched = torch.zeros(batch_size, max_points, feats.shape[1], device=feats.device, dtype=feats.dtype)
+            
+            # Scatter operation is faster than manual loop
+            batch_idx_expanded = batch_idx.unsqueeze(1).expand(-1, 3)  # (M, 3)
+            xyz_batched.scatter_(1, batch_idx_expanded.unsqueeze(2).expand(-1, -1, 1), xyz.unsqueeze(1))
+            
+            # For features, need to handle variable feature dimensions
+            for b in range(batch_size):
+                mask = batch_idx == b
+                n = mask.sum().item()
+                xyz_batched[b, :n] = xyz[mask]
+                feats_batched[b, :n] = feats[mask]
         
         # Subsample to max_input_points using FPS for memory efficiency
+        max_points = max(points_per_batch)
         if max_points > self.max_input_points:
-            fps_idx = furthest_point_sample(xyz_batched, self.max_input_points)  # (B, max_input_points)
-            xyz_sub = gather_operation(xyz_batched.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()
-            feats_sub = gather_operation(feats_batched.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()
+            fps_idx = furthest_point_sample(xyz_batched, self.max_input_points)
+            xyz_sub = gather_operation(xyz_batched.transpose(1, 2), fps_idx).transpose(1, 2)
+            feats_sub = gather_operation(feats_batched.transpose(1, 2), fps_idx).transpose(1, 2)
         else:
             xyz_sub = xyz_batched
             feats_sub = feats_batched
             fps_idx = None
         
         # PointNet++ expects features as (B, C, N)
-        feats_sub = feats_sub.transpose(1, 2).contiguous()
+        feats_sub = feats_sub.transpose(1, 2)
         
         # Encoder
         l0_xyz, l0_feats = xyz_sub, feats_sub
@@ -134,9 +148,12 @@ class PointNet2Backbone(nn.Module):
         out_feats = self.final_mlp(l0_feats)  # (B, out_channels, N)
         out_feats = out_feats.transpose(1, 2)  # (B, N, C)
         
-        # Unpad and concatenate
-        out_list = [out_feats[b, :points_per_batch[b]] for b in range(batch_size)]
-        out_feats = torch.cat(out_list, dim=0)
+        # Unpad and concatenate (vectorized for batch > 1, simple squeeze for batch_size=1)
+        if batch_size == 1:
+            out_feats = out_feats.squeeze(0)
+        else:
+            out_list = [out_feats[b, :points_per_batch[b]] for b in range(batch_size)]
+            out_feats = torch.cat(out_list, dim=0)
         
         return sparse_input.replace_feature(out_feats)
 
@@ -191,33 +208,42 @@ class PointNet2BackboneLight(nn.Module):
         coords = sparse_input.indices
         batch_size = sparse_input.batch_size
         
-        xyz = coords[:, 1:4].float()
-        batch_idx = coords[:, 0]
+        # CRITICAL: coords are voxel indices. PointNet++ needs real spatial coordinates!
+        VOXEL_SIZE = 0.005 # TODO: Do not hardcode this
+        xyz = coords[:, 1:4].float() * VOXEL_SIZE
+        batch_idx = coords[:, 0].int()
         
-        points_per_batch = [(batch_idx == b).sum().item() for b in range(batch_size)]
-        max_points = max(points_per_batch)
-        
-        xyz_batched = torch.zeros(batch_size, max_points, 3, device=xyz.device, dtype=xyz.dtype)
-        feats_batched = torch.zeros(batch_size, max_points, feats.shape[1], device=feats.device, dtype=feats.dtype)
-        
-        idx = 0
-        for b in range(batch_size):
-            n = points_per_batch[b]
-            xyz_batched[b, :n] = xyz[idx:idx + n]
-            feats_batched[b, :n] = feats[idx:idx + n]
-            idx += n
+        # OPTIMIZATION: Fast path for batch_size=1 (skip padding overhead)
+        if batch_size == 1:
+            xyz_batched = xyz.unsqueeze(0)  # (1, N, 3)
+            feats_batched = feats.unsqueeze(0)  # (1, N, C)
+            points_per_batch = [xyz.shape[0]]
+        else:
+            # Count points per batch (vectorized)
+            points_per_batch = torch.bincount(batch_idx, minlength=batch_size).tolist()
+            max_points = max(points_per_batch)
+            
+            xyz_batched = torch.zeros(batch_size, max_points, 3, device=xyz.device, dtype=xyz.dtype)
+            feats_batched = torch.zeros(batch_size, max_points, feats.shape[1], device=feats.device, dtype=feats.dtype)
+            
+            for b in range(batch_size):
+                mask = batch_idx == b
+                n = mask.sum().item()
+                xyz_batched[b, :n] = xyz[mask]
+                feats_batched[b, :n] = feats[mask]
         
         # Subsample if needed
+        max_points = max(points_per_batch)
         if max_points > self.max_input_points:
             fps_idx = furthest_point_sample(xyz_batched, self.max_input_points)
-            xyz_sub = gather_operation(xyz_batched.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()
-            feats_sub = gather_operation(feats_batched.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()
+            xyz_sub = gather_operation(xyz_batched.transpose(1, 2), fps_idx).transpose(1, 2)
+            feats_sub = gather_operation(feats_batched.transpose(1, 2), fps_idx).transpose(1, 2)
         else:
             xyz_sub = xyz_batched
             feats_sub = feats_batched
             fps_idx = None
         
-        feats_sub = feats_sub.transpose(1, 2).contiguous()
+        feats_sub = feats_sub.transpose(1, 2)
         
         l0_xyz, l0_feats = xyz_sub, feats_sub
         l1_xyz, l1_feats = self.sa1(l0_xyz, l0_feats)
@@ -236,7 +262,12 @@ class PointNet2BackboneLight(nn.Module):
             l0_feats = three_interpolate(l0_feats, idx_nn.long(), weight)
         
         out_feats = self.final_mlp(l0_feats).transpose(1, 2)
-        out_feats = torch.cat([out_feats[b, :points_per_batch[b]] for b in range(batch_size)], dim=0)
+        
+        # Unpad and concatenate
+        if batch_size == 1:
+            out_feats = out_feats.squeeze(0)
+        else:
+            out_feats = torch.cat([out_feats[b, :points_per_batch[b]] for b in range(batch_size)], dim=0)
         
         return sparse_input.replace_feature(out_feats)
 
