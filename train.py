@@ -48,6 +48,8 @@ parser.add_argument('--val_split', type=str, default='val', choices=['val', 'tes
                     help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
 parser.add_argument('--use_amp', action='store_true', default=False,
                     help='Use torch.cuda.amp for mixed-precision training')
+parser.add_argument('--single_sample', action='store_true', default=False,
+                    help='Overfit test: use only 1 training sample for 10 epochs')
 parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers [default: 0]')
 parser.add_argument('--persistent_workers', action='store_true', default=False, 
                     help='Keep workers alive between epochs (reduces memory overhead with num_workers>0)')
@@ -112,6 +114,13 @@ def create_dataloaders():
                                   remove_outlier=True, augment=False, load_label=True)
     log_string('validation dataset length: ' + str(len(val_dataset)))
 
+    # For overfitting test, use only 1 sample repeated 256 times
+    if cfgs.single_sample:
+        from torch.utils.data import Subset
+        train_dataset = Subset(train_dataset, [0] * 256)
+        cfgs.max_epoch = 20
+        log_string('Single-sample overfitting test enabled: 256x repeated, max_epoch set to 20')
+    
     train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, shuffle=True,
                                   num_workers=cfgs.num_workers, pin_memory=True, 
                                   persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
@@ -188,7 +197,7 @@ def create_model_and_optimizer():
 
 def get_current_lr(epoch):
     lr = cfgs.learning_rate
-    lr = lr * (0.95 ** epoch)
+    lr = max(lr * (0.98 ** epoch), 0.1*cfgs.learning_rate)#lr * (0.95 ** epoch)
     return lr
 
 

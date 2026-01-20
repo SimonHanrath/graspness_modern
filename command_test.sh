@@ -1,1 +1,1 @@
-python test.py --dataset_root /datasets/graspnet --camera kinect --checkpoint_path logs/gsnet_currentcurrent/gsnet_modern_epoch40.tar --dump_dir dumps/gsnet_dev_kinect --batch_size 1 --infer --eval
+python test.py --dataset_root /datasets/graspnet --camera realsense --checkpoint_path logs/gsnet_pointnet2_input_fix/gsnet_pointnet2_epoch19.tar --dump_dir dumps/realsense --batch_size 1 --infer --eval --backbone pointnet2

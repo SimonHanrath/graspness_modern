@@ -31,7 +31,7 @@ class PointNet2Backbone(nn.Module):
     then interpolates features back to all original points.
     """
     
-    def __init__(self, in_channels=3, out_channels=512, max_input_points=2048):
+    def __init__(self, in_channels=3, out_channels=512, max_input_points=4096):#2048): TODO: figure this out
         super().__init__()
         self.out_channels = out_channels
         self.max_input_points = max_input_points
