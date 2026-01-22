@@ -45,7 +45,7 @@ class LazyGraspLabels:
 
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
-                 voxel_size=0.005, remove_outlier=True, augment=False, load_label=True):
+                 voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False):
         assert (num_points <= 50000)
         self.root = root
         self.split = split
@@ -56,6 +56,7 @@ class GraspNetDataset(Dataset):
         self.camera = camera
         self.augment = augment
         self.load_label = load_label
+        self.use_rgb = use_rgb  # Whether to include RGB features (for 6-channel input)
         
         # Cache for collision labels - use LRU cache with max size to limit memory
         # This allows recently accessed scenes to stay in memory while releasing old ones
@@ -69,7 +70,7 @@ class GraspNetDataset(Dataset):
         elif split == 'test':
             self.sceneIds = list(range(110, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(10, 11))  # Match eval_seen which uses scene_0010
+            self.sceneIds = list(range(10, 11))  # Match eval_seen which uses scene_0110
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':
@@ -77,6 +78,7 @@ class GraspNetDataset(Dataset):
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
+        self.rgbpath = []  # RGB image paths
         self.labelpath = []
         self.metapath = []
         self.scenename = []
@@ -85,6 +87,7 @@ class GraspNetDataset(Dataset):
         for x in tqdm(self.sceneIds, desc='Loading data paths...'):
             for img_num in range(256):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
+                self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))
                 self.metapath.append(os.path.join(root, 'scenes', x, camera, 'meta', str(img_num).zfill(4) + '.mat'))
                 self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
@@ -160,6 +163,11 @@ class GraspNetDataset(Dataset):
         seg = np.array(Image.open(self.labelpath[index]))
         meta = scio.loadmat(self.metapath[index])
         scene = self.scenename[index]
+        
+        # Load RGB if needed
+        if self.use_rgb:
+            rgb = np.array(Image.open(self.rgbpath[index]))  # (H, W, 3) uint8
+        
         try:
             intrinsic = meta['intrinsic_matrix']
             factor_depth = meta['factor_depth']
@@ -183,6 +191,10 @@ class GraspNetDataset(Dataset):
         else:
             mask = depth_mask
         cloud_masked = cloud[mask]
+        
+        # Apply same mask to RGB
+        if self.use_rgb:
+            rgb_masked = rgb[mask]  # (N, 3) uint8
 
         if return_raw_cloud:
             return cloud_masked
@@ -194,13 +206,23 @@ class GraspNetDataset(Dataset):
             idxs2 = np.random.choice(len(cloud_masked), self.num_points - len(cloud_masked), replace=True)
             idxs = np.concatenate([idxs1, idxs2], axis=0)
         cloud_sampled = cloud_masked[idxs]
+        
+        if self.use_rgb:
+            rgb_sampled = rgb_masked[idxs]  # (num_points, 3)
 
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset
 
+        # Features: either ones (3-ch) or normalized RGB (3-ch for 6-ch input: XYZ coords + RGB feats)
+        if self.use_rgb:
+            # Normalize RGB to [0, 1] range
+            feats = rgb_sampled.astype(np.float32) / 255.0
+        else:
+            feats = np.ones_like(cloud_sampled).astype(np.float32)
+
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
-                    'feats': np.ones_like(cloud_sampled).astype(np.float32),
+                    'feats': feats,
                     'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
                     }
         return ret_dict
@@ -211,6 +233,11 @@ class GraspNetDataset(Dataset):
         meta = scio.loadmat(self.metapath[index])
         graspness = np.load(self.graspnesspath[index])  # for each point in workspace masked point cloud
         scene = self.scenename[index]
+        
+        # Load RGB if needed
+        if self.use_rgb:
+            rgb = np.array(Image.open(self.rgbpath[index]))  # (H, W, 3) uint8
+        
         try:
             obj_idxs = meta['cls_indexes'].flatten().astype(np.int32)
             poses = meta['poses']
@@ -237,6 +264,10 @@ class GraspNetDataset(Dataset):
             mask = depth_mask
         cloud_masked = cloud[mask]
         seg_masked = seg[mask]
+        
+        # Apply same mask to RGB
+        if self.use_rgb:
+            rgb_masked = rgb[mask]  # (N, 3) uint8
 
         # sample points
         if len(cloud_masked) >= self.num_points:
@@ -249,6 +280,9 @@ class GraspNetDataset(Dataset):
         seg_sampled = seg_masked[idxs]
         graspness_sampled = graspness[idxs]
         objectness_label = seg_sampled.copy()
+        
+        if self.use_rgb:
+            rgb_sampled = rgb_masked[idxs]  # (num_points, 3)
 
         objectness_label[objectness_label > 1] = 1
 
@@ -282,9 +316,16 @@ class GraspNetDataset(Dataset):
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset
 
+        # Features: either ones (3-ch) or normalized RGB (3-ch for 6-ch input: XYZ coords + RGB feats)
+        if self.use_rgb:
+            # Normalize RGB to [0, 1] range
+            feats = rgb_sampled.astype(np.float32) / 255.0
+        else:
+            feats = np.ones_like(cloud_sampled).astype(np.float32)
+
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
-                    'feats': np.ones_like(cloud_sampled).astype(np.float32),
+                    'feats': feats,
                     'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
                     'graspness_label': graspness_sampled.astype(np.float32),
                     'objectness_label': objectness_label.astype(np.int64),

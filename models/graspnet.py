@@ -45,24 +45,32 @@ class GraspNet(nn.Module):
         self.num_angle = NUM_ANGLE
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
+        
+        # Auto-enable RGB for transformer_pretrained (requires 6-channel input: XYZ + RGB)
+        self.use_rgb = (backbone == 'transformer_pretrained') or (backbone == 'transformer' and use_pretrained_ptv3)
+
+        # Determine input channels based on backbone
+        in_channels = 3  # Feature channels (RGB or ones)
 
         # Select backbone architecture
         if backbone == 'resunet':
-            self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+            self.backbone = SPconvUNet14D(in_channels=in_channels, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'pointnet2':
-            self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
+            self.backbone = PointNet2Backbone(in_channels=in_channels, out_channels=self.seed_feature_dim)
         elif backbone == 'transformer_pretrained' or (backbone == 'transformer' and use_pretrained_ptv3):
             # Use PTv3 backbone with pretrained Pointcept weights
+            # PTv3 pretrained model expects 6-ch input (XYZ + RGB/normals)
+            # We concatenate coords with features in forward pass
             self.backbone = create_ptv3_backbone_grasp(
                 checkpoint_path=ptv3_pretrained_path,
-                in_channels=3,
+                in_channels=6,  # Always 6-ch for pretrained (XYZ+RGB)
                 out_channels=self.seed_feature_dim,
                 use_pretrained=True,
                 enable_flash=enable_flash,
             )
         else:  # transformer (default without pretrained)
             self.backbone = PointTransformerV3EncoderFullRes(
-                in_channels=3, 
+                in_channels=in_channels, 
                 out_channels=self.seed_feature_dim,
                 enc_depths=(1, 1, 1, 2, 1),
                 enc_channels=(32, 64, 128, 256, 256),
@@ -120,8 +128,21 @@ class GraspNet(nn.Module):
 
         coords_bxyz = coords.contiguous().to(torch.int32)
 
+        # For PTv3 with use_rgb=True, we need 6-channel input (normalized XYZ coords + RGB features)
+        # The pretrained PTv3 model expects: [x, y, z, r, g, b] where all are normalized
+        if self.use_rgb and feats.shape[1] == 3:  # RGB features available
+            # Normalize coordinates to [0, 1] range for each axis
+            coord_float = coords[:, 1:].float()  # (M, 3) [x, y, z]
+            coord_min = coord_float.min(dim=0, keepdim=True).values
+            coord_max = coord_float.max(dim=0, keepdim=True).values
+            coord_normalized = (coord_float - coord_min) / (coord_max - coord_min + 1e-6)  # (M, 3) in [0, 1]
+            # Concatenate normalized coords with RGB features (already normalized in dataset)
+            feats_6ch = torch.cat([coord_normalized, feats], dim=1)  # (M, 6)
+        else:
+            feats_6ch = feats  # Use original features (3-ch)
+
         sparse_input = spconv.SparseConvTensor(
-            feats,                 # (M, Cin) 
+            feats_6ch,             # (M, Cin) - 6 channels for PTv3 with RGB, 3 otherwise
             coords_bxyz,           # (M, 4) [batch, x, y, z], int32
             spatial_shape_xyz,     # (X, Y, Z)
             B                      

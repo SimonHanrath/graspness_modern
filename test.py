@@ -50,8 +50,14 @@ def my_worker_init_fn(worker_id):
 
 
 def inference():
+    # Auto-enable RGB for transformer_pretrained backbone (requires 6-channel input)
+    use_rgb = (cfgs.backbone == 'transformer_pretrained')
+    if use_rgb:
+        print("Using RGB features for 6-channel input (XYZ + RGB) - required for transformer_pretrained")
+    
     test_dataset = GraspNetDataset(cfgs.dataset_root, split='test_seen', camera=cfgs.camera, num_points=cfgs.num_point,
-                                   voxel_size=cfgs.voxel_size, remove_outlier=True, augment=False, load_label=False)
+                                   voxel_size=cfgs.voxel_size, remove_outlier=True, augment=False, load_label=False,
+                                   use_rgb=use_rgb)
     print('Test dataset length: ', len(test_dataset))
     scene_list = test_dataset.scene_list()
     test_dataloader = DataLoader(test_dataset, batch_size=cfgs.batch_size, shuffle=False,

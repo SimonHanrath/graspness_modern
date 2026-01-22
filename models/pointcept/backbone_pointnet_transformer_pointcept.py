@@ -435,7 +435,7 @@ class SerializedPooling(PointModule):
         norm_layer=None,
         act_layer=None,
         reduce="max",
-        shuffle_orders=True,
+        shuffle_orders=True, # TODO: Maybe change to False
         traceable=True,
     ):
         super().__init__()
@@ -1182,6 +1182,8 @@ def create_ptv3_backbone_from_pretrained(
         PointTransformerV3EncoderFullRes with pretrained weights loaded
     """
     # Default config matching pretrained checkpoint
+    # Note: drop_path reduced from 0.3 to 0.1 for fine-tuning stability
+    # Note: patch_size reduced from 1024 to 128 for better local attention on ~15k points
     default_config = dict(
         in_channels=6,
         out_channels=out_channels,
@@ -1190,17 +1192,17 @@ def create_ptv3_backbone_from_pretrained(
         enc_depths=(2, 2, 2, 6, 2),
         enc_channels=(32, 64, 128, 256, 512),
         enc_num_head=(2, 4, 8, 16, 32),
-        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        enc_patch_size=(128, 128, 128, 128, 128),
         dec_depths=(2, 2, 2, 2),
         dec_channels=(64, 64, 128, 256),
         dec_num_head=(4, 4, 8, 16),
-        dec_patch_size=(1024, 1024, 1024, 1024),
+        dec_patch_size=(128, 128, 128, 128),
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,
         attn_drop=0.0,
         proj_drop=0.0,
-        drop_path=0.3,
+        drop_path=0.1,
         pre_norm=True,
         shuffle_orders=True,
         enable_rpe=False,
@@ -1310,18 +1312,19 @@ def create_ptv3_backbone_grasp(
             
             model.embedding = new_embedding
     else:
-        # Create model from scratch
+        # Create model from scratch with grasp-detection-optimized settings
         model = PointTransformerV3EncoderFullRes(
             in_channels=in_channels,
             out_channels=out_channels,
             enc_depths=(2, 2, 2, 6, 2),
             enc_channels=(32, 64, 128, 256, 512),
             enc_num_head=(2, 4, 8, 16, 32),
-            enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+            enc_patch_size=(128, 128, 128, 128, 128),
             dec_depths=(2, 2, 2, 2),
             dec_channels=(64, 64, 128, 256),
             dec_num_head=(4, 4, 8, 16),
-            dec_patch_size=(1024, 1024, 1024, 1024),
+            dec_patch_size=(128, 128, 128, 128),
+            drop_path=0.1,
             enable_flash=enable_flash,
             **kwargs,
         )

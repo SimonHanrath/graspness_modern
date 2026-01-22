@@ -67,6 +67,8 @@ parser.add_argument('--enable_flash', action='store_true', default=False,
                     help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
 parser.add_argument('--accumulation_steps', type=int, default=1,
                     help='Gradient accumulation steps (simulate larger batch with batch_size=1) [default: 1]')
+parser.add_argument('--backbone_lr_scale', type=float, default=None,
+                    help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
 
 
 cfgs = parser.parse_args()
@@ -103,15 +105,20 @@ def create_dataloaders():
         log_string("Loading all grasp labels into memory (~21GB)")
         grasp_labels = load_grasp_labels(cfgs.dataset_root)
 
+    # Auto-enable RGB for transformer_pretrained backbone (requires 6-channel input)
+    use_rgb = (cfgs.backbone == 'transformer_pretrained')
+    if use_rgb:
+        log_string("Using RGB features for 6-channel input (XYZ + RGB) - required for transformer_pretrained")
+
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='train',
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
-                                    remove_outlier=True, augment=True, load_label=True)
+                                    remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb)
     log_string('train dataset length: ' + str(len(train_dataset)))
 
     # Validation dataset (use specified validation split without augmentation)
     val_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.val_split,
                                   num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
-                                  remove_outlier=True, augment=False, load_label=True)
+                                  remove_outlier=True, augment=False, load_label=True, use_rgb=use_rgb)
     log_string('validation dataset length: ' + str(len(val_dataset)))
 
     # For overfitting test, use only 1 sample repeated 256 times
@@ -148,34 +155,61 @@ def create_model_and_optimizer():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
 
-    # Load optimizer (use AdamW if weight_decay > 0, otherwise Adam) # TODO weight decay is not working atm
-    if cfgs.weight_decay > 0:
-        decay_params = []
-        no_decay_params = []
+    # Determine backbone LR scale (default: 0.1 for pretrained, 1.0 otherwise)
+    backbone_lr_scale = cfgs.backbone_lr_scale
+    if backbone_lr_scale is None:
+        backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
+    
+    backbone_lr = cfgs.learning_rate * backbone_lr_scale
+    head_lr = cfgs.learning_rate
+    
+    # Separate backbone params from head params for discriminative learning rates
+    backbone_decay_params = []
+    backbone_no_decay_params = []
+    head_decay_params = []
+    head_no_decay_params = []
+    
+    for name, param in net.named_parameters():
+        if not param.requires_grad:
+            continue
         
-        for name, param in net.named_parameters():
-            if not param.requires_grad:
-                continue
-            # Check if this is a normalization parameter or any bias
-            # 'bn' catches BatchNorm modules named like 'sa1.mlps.0.0.bn.weight'
-            is_norm = any(n in name.lower() for n in ['layernorm', 'layer_norm', 'batchnorm', 'batch_norm', '.bn.', '.norm.', '.norm1.', '.norm2.'])
-            is_bias = name.endswith('.bias')
-            
-            if is_norm or is_bias:
-                no_decay_params.append(param)
+        # Check if this is a backbone parameter
+        is_backbone = name.startswith('backbone.')
+        
+        # Check if this is a normalization parameter or bias (no weight decay)
+        is_norm = any(n in name.lower() for n in ['layernorm', 'layer_norm', 'batchnorm', 'batch_norm', '.bn.', '.norm.', '.norm1.', '.norm2.'])
+        is_bias = name.endswith('.bias')
+        no_decay = is_norm or is_bias
+        
+        if is_backbone:
+            if no_decay:
+                backbone_no_decay_params.append(param)
             else:
-                decay_params.append(param)
-        
-        param_groups = [
-            {'params': decay_params, 'weight_decay': cfgs.weight_decay},
-            {'params': no_decay_params, 'weight_decay': 0.0},
-        ]
-        
-        optimizer = optim.AdamW(param_groups, lr=cfgs.learning_rate)
-        log_string(f"Using AdamW optimizer with weight_decay={cfgs.weight_decay}")
-    else:
-        optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
-        log_string("Using Adam optimizer (no weight decay)")
+                backbone_decay_params.append(param)
+        else:
+            if no_decay:
+                head_no_decay_params.append(param)
+            else:
+                head_decay_params.append(param)
+    
+    # Build param groups with discriminative LRs
+    weight_decay = cfgs.weight_decay if cfgs.weight_decay > 0 else 0.0
+    param_groups = [
+        {'params': backbone_decay_params, 'lr': backbone_lr, 'weight_decay': weight_decay, 'name': 'backbone_decay'},
+        {'params': backbone_no_decay_params, 'lr': backbone_lr, 'weight_decay': 0.0, 'name': 'backbone_no_decay'},
+        {'params': head_decay_params, 'lr': head_lr, 'weight_decay': weight_decay, 'name': 'head_decay'},
+        {'params': head_no_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_no_decay'},
+    ]
+    # Remove empty groups
+    param_groups = [g for g in param_groups if len(g['params']) > 0]
+    
+    # Use AdamW (handles weight decay properly even if 0)
+    optimizer = optim.AdamW(param_groups)
+    
+    log_string(f"Optimizer: AdamW with weight_decay={weight_decay}")
+    log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={backbone_lr_scale}), heads={head_lr:.6f}")
+    log_string(f"Param groups: backbone_decay={len(backbone_decay_params)}, backbone_no_decay={len(backbone_no_decay_params)}, "
+               f"head_decay={len(head_decay_params)}, head_no_decay={len(head_no_decay_params)}")
 
     # Initialize GradScaler for AMP (to prevent small gradients from underflowing to zero)
     scaler = GradScaler(enabled=cfgs.use_amp and device.type == 'cuda')
@@ -195,16 +229,29 @@ def create_model_and_optimizer():
     return net, optimizer, scaler, start_epoch, device
 
 
-def get_current_lr(epoch):
-    lr = cfgs.learning_rate
-    lr = max(lr * (0.98 ** epoch), 0.1*cfgs.learning_rate)#lr * (0.95 ** epoch)
+def get_current_lr(epoch, base_lr):
+    """Calculate LR with decay, keeping at least 10% of base."""
+    lr = base_lr * (0.98 ** epoch)
+    lr = max(lr, 0.1 * base_lr)
     return lr
 
 
 def adjust_learning_rate(optimizer, epoch):
-    lr = get_current_lr(epoch)
+    """Adjust LR for all param groups, maintaining their relative ratios."""
+    # Determine backbone LR scale
+    backbone_lr_scale = cfgs.backbone_lr_scale
+    if backbone_lr_scale is None:
+        backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
+    
+    head_lr = get_current_lr(epoch, cfgs.learning_rate)
+    backbone_lr = get_current_lr(epoch, cfgs.learning_rate * backbone_lr_scale)
+    
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        group_name = param_group.get('name', '')
+        if 'backbone' in group_name:
+            param_group['lr'] = backbone_lr
+        else:
+            param_group['lr'] = head_lr
 
 
 def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writer):
@@ -326,11 +373,15 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dat
     for epoch in range(start_epoch, cfgs.max_epoch):
         EPOCH_CNT = epoch
         log_string('**** EPOCH %03d ****' % epoch)
-        log_string('Current learning rate: %f' % (get_current_lr(epoch)))
+        log_string('Current learning rate: head=%.6f, backbone=%.6f' % (
+            get_current_lr(epoch, cfgs.learning_rate),
+            get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0)))
+        ))
         log_string(str(datetime.now()))
         
         # Log learning rate to TensorBoard
-        train_writer.add_scalar('learning_rate', get_current_lr(epoch), epoch)
+        train_writer.add_scalar('learning_rate/head', get_current_lr(epoch, cfgs.learning_rate), epoch)
+        train_writer.add_scalar('learning_rate/backbone', get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0))), epoch)
         
         # Reset numpy seed.
         # REF: https://github.com/pytorch/pytorch/issues/5059
