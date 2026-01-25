@@ -152,6 +152,14 @@ class GraspNet(nn.Module):
         sparse_output = self.backbone(sparse_input)
         voxel_features = sparse_output.features  # (M, C) - same M voxels as input
         
+        # DEBUG: Store backbone feature statistics for analysis
+        if not self.is_training:
+            end_points['_debug_backbone_feat_min'] = voxel_features.min().item()
+            end_points['_debug_backbone_feat_max'] = voxel_features.max().item()
+            end_points['_debug_backbone_feat_mean'] = voxel_features.mean().item()
+            end_points['_debug_backbone_feat_std'] = voxel_features.std().item()
+            end_points['_debug_backbone_feat_shape'] = tuple(voxel_features.shape)
+        
         # Map voxel features back to original dense point cloud using quantize2original
         # This is to mimic the approach from MinkowskiEngine
         seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
