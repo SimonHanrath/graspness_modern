@@ -37,6 +37,7 @@ class GraspNet(nn.Module):
         ptv3_pretrained_path=None,
         use_pretrained_ptv3=False,
         enable_flash=False,
+        enable_stable_score=False,
     ):
         super().__init__()
         self.is_training = is_training
@@ -45,6 +46,7 @@ class GraspNet(nn.Module):
         self.num_angle = NUM_ANGLE
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
+        self.enable_stable_score = enable_stable_score
         
         # Auto-enable RGB for transformer_pretrained (requires 6-channel input: XYZ + RGB)
         self.use_rgb = (backbone == 'transformer_pretrained') or (backbone == 'transformer' and use_pretrained_ptv3)
@@ -87,7 +89,7 @@ class GraspNet(nn.Module):
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
-        self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth)
+        self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth, enable_stable_score=enable_stable_score)
 
         # Torch-native constants
         self.register_buffer("angle_step", torch.tensor(np.pi / 12, dtype=torch.float32))
@@ -151,14 +153,6 @@ class GraspNet(nn.Module):
         # spconv UNet will preserve voxel structure (same coordinates, different features)
         sparse_output = self.backbone(sparse_input)
         voxel_features = sparse_output.features  # (M, C) - same M voxels as input
-        
-        # DEBUG: Store backbone feature statistics for analysis
-        if not self.is_training:
-            end_points['_debug_backbone_feat_min'] = voxel_features.min().item()
-            end_points['_debug_backbone_feat_max'] = voxel_features.max().item()
-            end_points['_debug_backbone_feat_mean'] = voxel_features.mean().item()
-            end_points['_debug_backbone_feat_std'] = voxel_features.std().item()
-            end_points['_debug_backbone_feat_shape'] = tuple(voxel_features.shape)
         
         # Map voxel features back to original dense point cloud using quantize2original
         # This is to mimic the approach from MinkowskiEngine
@@ -239,16 +233,46 @@ class GraspNet(nn.Module):
         return end_points
 
 
-def pred_decode(end_points):
+def pred_decode(end_points, use_stable_score=False):
+    """
+    Decode grasp predictions into grasp poses.
+    
+    Args:
+        end_points: dict containing model outputs
+        use_stable_score: if True, reweight grasp scores by (1 - stable_score[rot])
+    
+    Returns:
+        List of grasp predictions per batch, each with shape [M_POINT, 17]:
+        [score, width, height, depth, rotation(9), translation(3), obj_id]
+    """
     batch_size = len(end_points['point_clouds'])
     grasp_preds = []
+    
+    # Check if stable score predictions are available
+    has_stable = 'grasp_stable_pred' in end_points and use_stable_score
+    
     for i in range(batch_size):
         grasp_center = end_points['xyz_graspable'][i].float()
 
-        grasp_score = end_points['grasp_score_pred'][i].float()
+        grasp_score = end_points['grasp_score_pred'][i].float()  # (M, A, D)
         grasp_score = grasp_score.view(M_POINT, NUM_ANGLE*NUM_DEPTH)
-        grasp_score, grasp_score_inds = torch.max(grasp_score, -1)  # [M_POINT]
-        grasp_score = grasp_score.view(-1, 1)
+        
+        # Get stable score for reweighting if available
+        if has_stable:
+            stable_score = end_points['grasp_stable_pred'][i].float()  # (M, A)
+            # Expand stable score to match angle*depth shape (stable is shared across depths)
+            stable_expanded = stable_score.unsqueeze(-1).expand(-1, -1, NUM_DEPTH)  # (M, A, D)
+            stable_expanded = stable_expanded.reshape(M_POINT, NUM_ANGLE*NUM_DEPTH)
+            # Reweight: score_new = score_old * (1 - stable_score)
+            grasp_score_reweighted = grasp_score * (1.0 - stable_expanded)
+            # Find best grasp using reweighted scores
+            _, grasp_score_inds = torch.max(grasp_score_reweighted, -1)  # [M_POINT]
+            # Get the original score for the selected grasp (for output compatibility)
+            grasp_score_final = torch.gather(grasp_score, 1, grasp_score_inds.view(-1, 1))
+        else:
+            grasp_score_final, grasp_score_inds = torch.max(grasp_score, -1)  # [M_POINT]
+            grasp_score_final = grasp_score_final.view(-1, 1)
+        
         grasp_angle = (grasp_score_inds // NUM_DEPTH).float() * (torch.pi / 12)
         grasp_depth = (grasp_score_inds % NUM_DEPTH + 1).float() * 0.01
         grasp_depth = grasp_depth.view(-1, 1)
@@ -262,8 +286,8 @@ def pred_decode(end_points):
         grasp_rot = grasp_rot.view(M_POINT, 9)
 
         # merge preds
-        grasp_height = 0.02 * torch.ones_like(grasp_score)
-        obj_ids = -1 * torch.ones_like(grasp_score)
+        grasp_height = 0.02 * torch.ones_like(grasp_score_final)
+        obj_ids = -1 * torch.ones_like(grasp_score_final)
         grasp_preds.append(
-            torch.cat([grasp_score, grasp_width, grasp_height, grasp_depth, grasp_rot, grasp_center, obj_ids], axis=-1))
+            torch.cat([grasp_score_final, grasp_width, grasp_height, grasp_depth, grasp_rot, grasp_center, obj_ids], axis=-1))
     return grasp_preds 

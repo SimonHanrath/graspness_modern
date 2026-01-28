@@ -20,11 +20,16 @@ def process_grasp_labels(end_points):
     """ Process labels according to scene points and object poses. """
     seed_xyzs = end_points['xyz_graspable']  # (B, M_point, 3)
     batch_size, num_samples, _ = seed_xyzs.size()
+    
+    # Check if stable labels are available
+    has_stable = 'grasp_stable_list' in end_points
 
     batch_grasp_points = []
     batch_grasp_views_rot = []
     batch_grasp_scores = []
     batch_grasp_widths = []
+    batch_grasp_stable = [] if has_stable else None
+    
     for i in range(batch_size):
         seed_xyz = seed_xyzs[i]  # (Ns, 3)
         poses = end_points['object_poses_list'][i]  # [(3, 4),]
@@ -39,6 +44,8 @@ def process_grasp_labels(end_points):
         grasp_views_rot_merged = []
         grasp_scores_merged = []
         grasp_widths_merged = []
+        grasp_stable_merged = [] if has_stable else None
+        
         for obj_idx, pose in enumerate(poses):
             grasp_points = end_points['grasp_points_list'][i][obj_idx]  # (Np, 3)
             grasp_scores = end_points['grasp_scores_list'][i][obj_idx]  # (Np, V, A, D)
@@ -70,11 +77,19 @@ def process_grasp_labels(end_points):
             grasp_views_rot_merged.append(grasp_views_rot_trans)
             grasp_scores_merged.append(grasp_scores)
             grasp_widths_merged.append(grasp_widths)
+            
+            # Handle stable labels if available
+            if has_stable:
+                grasp_stable = end_points['grasp_stable_list'][i][obj_idx]  # (Np, V, A)
+                grasp_stable = torch.index_select(grasp_stable, 1, view_inds)  # (Np, V, A)
+                grasp_stable_merged.append(grasp_stable)
 
         grasp_points_merged = torch.cat(grasp_points_merged, dim=0)  # (Np', 3)
         grasp_views_rot_merged = torch.cat(grasp_views_rot_merged, dim=0)  # (Np', V, 3, 3)
         grasp_scores_merged = torch.cat(grasp_scores_merged, dim=0)  # (Np', V, A, D)
         grasp_widths_merged = torch.cat(grasp_widths_merged, dim=0)  # (Np', V, A, D)
+        if has_stable:
+            grasp_stable_merged = torch.cat(grasp_stable_merged, dim=0)  # (Np', V, A)
 
         # compute nearest neighbors - find nearest grasp point for each seed point
         # grasp_points_merged: (Np', 3), seed_xyz: (Ns, 3)
@@ -85,17 +100,23 @@ def process_grasp_labels(end_points):
         grasp_views_rot_merged = torch.index_select(grasp_views_rot_merged, 0, nn_inds)  # (Ns, V, 3, 3)
         grasp_scores_merged = torch.index_select(grasp_scores_merged, 0, nn_inds)  # (Ns, V, A, D)
         grasp_widths_merged = torch.index_select(grasp_widths_merged, 0, nn_inds)  # (Ns, V, A, D)
+        if has_stable:
+            grasp_stable_merged = torch.index_select(grasp_stable_merged, 0, nn_inds)  # (Ns, V, A)
 
         # add to batch
         batch_grasp_points.append(grasp_points_merged)
         batch_grasp_views_rot.append(grasp_views_rot_merged)
         batch_grasp_scores.append(grasp_scores_merged)
         batch_grasp_widths.append(grasp_widths_merged)
+        if has_stable:
+            batch_grasp_stable.append(grasp_stable_merged)
 
     batch_grasp_points = torch.stack(batch_grasp_points, 0)  # (B, Ns, 3)
     batch_grasp_views_rot = torch.stack(batch_grasp_views_rot, 0)  # (B, Ns, V, 3, 3)
     batch_grasp_scores = torch.stack(batch_grasp_scores, 0)  # (B, Ns, V, A, D)
     batch_grasp_widths = torch.stack(batch_grasp_widths, 0)  # (B, Ns, V, A, D)
+    if has_stable:
+        batch_grasp_stable = torch.stack(batch_grasp_stable, 0)  # (B, Ns, V, A)
 
     # compute view graspness
     view_u_threshold = 0.6
@@ -118,6 +139,10 @@ def process_grasp_labels(end_points):
     end_points['batch_grasp_score'] = batch_grasp_scores
     end_points['batch_grasp_width'] = batch_grasp_widths
     end_points['batch_grasp_view_graspness'] = batch_grasp_view_graspness
+    
+    # Add stable labels if available (shape: B, Ns, V, A)
+    if has_stable:
+        end_points['batch_grasp_stable_full'] = batch_grasp_stable
 
     return end_points
 
@@ -128,6 +153,9 @@ def match_grasp_view_and_label(end_points):
     template_views_rot = end_points['batch_grasp_view_rot']  # (B, Ns, V, 3, 3)
     grasp_scores = end_points['batch_grasp_score']  # (B, Ns, V, A, D)
     grasp_widths = end_points['batch_grasp_width']  # (B, Ns, V, A, D, 3)
+    
+    # Check if stable labels are available
+    has_stable = 'batch_grasp_stable_full' in end_points
 
     B, Ns, V, A, D = grasp_scores.size()
     top_view_inds_ = top_view_inds.view(B, Ns, 1, 1, 1).expand(-1, -1, -1, 3, 3)
@@ -135,6 +163,13 @@ def match_grasp_view_and_label(end_points):
     top_view_inds_ = top_view_inds.view(B, Ns, 1, 1, 1).expand(-1, -1, -1, A, D)
     top_view_grasp_scores = torch.gather(grasp_scores, 2, top_view_inds_).squeeze(2)
     top_view_grasp_widths = torch.gather(grasp_widths, 2, top_view_inds_).squeeze(2)
+    
+    # Slice stable labels according to predicted views
+    if has_stable:
+        grasp_stable = end_points['batch_grasp_stable_full']  # (B, Ns, V, A)
+        top_view_inds_stable = top_view_inds.view(B, Ns, 1, 1).expand(-1, -1, -1, A)
+        top_view_grasp_stable = torch.gather(grasp_stable, 2, top_view_inds_stable).squeeze(2)  # (B, Ns, A)
+        end_points['batch_grasp_stable'] = top_view_grasp_stable  # (B, Ns, A) = (B, M, 12)
 
     u_max = top_view_grasp_scores.max()
     po_mask = top_view_grasp_scores > 0

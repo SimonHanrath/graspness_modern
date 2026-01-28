@@ -2,13 +2,19 @@ import torch.nn as nn
 import torch
 
 
-def get_loss(end_points):
+def get_loss(end_points, enable_stable_score=False, lambda_stable=1.0):
     objectness_loss, end_points = compute_objectness_loss(end_points)
     graspness_loss, end_points = compute_graspness_loss(end_points)
     view_loss, end_points = compute_view_graspness_loss(end_points)
     score_loss, end_points = compute_score_loss(end_points)
     width_loss, end_points = compute_width_loss(end_points)
     loss = objectness_loss + 10 * graspness_loss + 100 * view_loss + 15 * score_loss + 10 * width_loss
+    
+    # Add stable score loss if enabled
+    if enable_stable_score and 'grasp_stable_pred' in end_points:
+        stable_loss, end_points = compute_stable_loss(end_points)
+        loss = loss + lambda_stable * stable_loss
+    
     end_points['loss/overall_loss'] = loss
     return loss, end_points
 
@@ -102,4 +108,42 @@ def compute_width_loss(end_points):
         loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
     
     end_points['loss/stage3_width_loss'] = loss
+    return loss, end_points
+
+
+def compute_stable_loss(end_points):
+    """
+    Compute stable score loss using SmoothL1 (Huber) loss.
+    
+    Stable score predicts how unstable a grasp is (higher = more likely to tip).
+    Loss is masked to only consider valid grasps (where grasp_score_label > 0).
+    
+    Inputs from end_points:
+        - grasp_stable_pred: (B, M, A) predicted stable scores in [0, 1]
+        - batch_grasp_stable: (B, M, A) target stable labels in [0, 1]
+        - batch_grasp_score: (B, M, A, D) grasp quality labels (used for masking)
+    
+    Returns:
+        - loss: scalar stable score loss
+        - end_points: updated with loss/stage3_stable_loss
+    """
+    criterion = nn.SmoothL1Loss(reduction='none')
+    
+    stable_pred = end_points['grasp_stable_pred']  # (B, M, A)
+    stable_label = end_points['batch_grasp_stable']  # (B, M, A)
+    
+    # Get grasp score label for masking - stable is shared across depths,
+    # so we check if any depth has a valid grasp for each (B, M, A) position
+    grasp_score_label = end_points['batch_grasp_score']  # (B, M, A, D)
+    # A grasp is valid if any depth has score > 0
+    loss_mask = (grasp_score_label > 0).any(dim=-1)  # (B, M, A)
+    
+    loss = criterion(stable_pred, stable_label)  # (B, M, A)
+    
+    if loss_mask.sum() > 0:
+        loss = loss[loss_mask].mean()
+    else:
+        loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
+    
+    end_points['loss/stage3_stable_loss'] = loss
     return loss, end_points

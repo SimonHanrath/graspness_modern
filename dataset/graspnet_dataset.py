@@ -13,6 +13,7 @@ import collections.abc as container_abcs
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_utils import CameraInfo, transform_point_cloud, create_point_cloud_from_depth_image, get_workspace_mask
+from utils.stable_score_utils import ensure_stable_labels_exist, check_stable_labels_available
 
 
 class LazyGraspLabels:
@@ -45,7 +46,8 @@ class LazyGraspLabels:
 
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
-                 voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False):
+                 voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
+                 enable_stable_score=False):
         assert (num_points <= 50000)
         self.root = root
         self.split = split
@@ -57,6 +59,22 @@ class GraspNetDataset(Dataset):
         self.augment = augment
         self.load_label = load_label
         self.use_rgb = use_rgb  # Whether to include RGB features (for 6-channel input)
+        self.enable_stable_score = enable_stable_score  # Whether to load stable score labels
+        
+        # Cache for stable score labels per object
+        self._stable_labels_cache = {}
+        self._stable_labels_path = os.path.join(root, 'stable_labels')
+        
+        # Auto-compute stable labels if enabled and missing
+        if enable_stable_score:
+            all_exist, missing_count = check_stable_labels_available(root)
+            if not all_exist:
+                print(f"Stable labels missing for {missing_count} objects. Auto-computing...")
+                success = ensure_stable_labels_exist(root, verbose=True)
+                if not success:
+                    raise RuntimeError(
+                        "Failed to compute stable labels. Please install trimesh: pip install trimesh"
+                    )
         
         # Cache for collision labels - use LRU cache with max size to limit memory
         # This allows recently accessed scenes to stay in memory while releasing old ones
@@ -98,6 +116,40 @@ class GraspNetDataset(Dataset):
 
     def scene_list(self):
         return self.scenename
+    
+    def _load_stable_labels(self, obj_idx): # TODO: Verify this for correctness
+        """
+        Lazy load stable score labels for a specific object on-demand.
+        
+        Args:
+            obj_idx: 1-indexed object ID (1-88)
+        
+        Returns:
+            stable_labels: np.ndarray of shape (Np, V, A) with stable scores in [0, 1]
+                          or None if stable labels are not available
+        """
+        if not self.enable_stable_score:
+            return None
+            
+        if obj_idx in self._stable_labels_cache:
+            return self._stable_labels_cache[obj_idx]
+        
+        # Load stable labels for this object
+        stable_file = os.path.join(self._stable_labels_path, '{}_stable.npz'.format(str(obj_idx - 1).zfill(3)))
+        if not os.path.exists(stable_file):
+            # Stable labels not precomputed for this object
+            return None
+        
+        stable_npz = np.load(stable_file)
+        stable_labels = stable_npz['stable'].astype(np.float32)  # (Np, V, A)
+        
+        # Cache with simple size limit
+        if len(self._stable_labels_cache) >= 20:  # Keep max 20 objects
+            oldest = next(iter(self._stable_labels_cache))
+            del self._stable_labels_cache[oldest]
+        
+        self._stable_labels_cache[obj_idx] = stable_labels
+        return stable_labels
     
     def _load_collision_labels(self, scene):
         """
@@ -294,6 +346,8 @@ class GraspNetDataset(Dataset):
         # Lazy load collision labels for this scene only when needed
         collision_labels_scene = self._load_collision_labels(scene) if self.load_label else None
         
+        grasp_stable_list = []  # List of stable labels per object
+        
         for i, obj_idx in enumerate(obj_idxs):
             if (seg_sampled == obj_idx).sum() < 50:
                 continue
@@ -308,6 +362,15 @@ class GraspNetDataset(Dataset):
             scores = scores[idxs].copy()
             scores[collision] = 0
             grasp_scores_list.append(scores)
+            
+            # Load stable labels if enabled
+            if self.enable_stable_score:
+                stable_labels = self._load_stable_labels(obj_idx)
+                if stable_labels is not None:
+                    grasp_stable_list.append(stable_labels[idxs])  # (Np_sampled, V, A)
+                else:
+                    # If stable labels not available, use zeros (no penalty)
+                    grasp_stable_list.append(np.zeros((len(idxs), scores.shape[1], scores.shape[2]), dtype=np.float32))
 
         if self.augment:
             cloud_sampled, object_poses_list = self.augment_data(cloud_sampled, object_poses_list)
@@ -333,6 +396,11 @@ class GraspNetDataset(Dataset):
                     'grasp_points_list': grasp_points_list,
                     'grasp_widths_list': grasp_widths_list,
                     'grasp_scores_list': grasp_scores_list}
+        
+        # Add stable labels if enabled
+        if self.enable_stable_score and len(grasp_stable_list) > 0:
+            ret_dict['grasp_stable_list'] = grasp_stable_list
+        
         return ret_dict
 
 

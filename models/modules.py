@@ -100,22 +100,40 @@ class CloudCrop(nn.Module): # Cylinder Grouping
 
 
 class SWADNet(nn.Module): # Grasp pose predicition head
-    def __init__(self, num_angle, num_depth):
+    def __init__(self, num_angle, num_depth, enable_stable_score=False):
         super().__init__()
         self.num_angle = num_angle
         self.num_depth = num_depth
+        self.enable_stable_score = enable_stable_score
 
         self.conv1 = nn.Conv1d(256, 256, 1)  # input feat dim need to be consistent with CloudCrop module
         self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth, 1)
+        
+        # Stable score head: predicts stability per rotation (shared across depths)
+        # Output shape: [B, num_angle, M] -> after permute: [B, M, num_angle]
+        if self.enable_stable_score:
+            self.conv_stable = nn.Sequential(
+                nn.Conv1d(256, 128, 1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(128, num_angle, 1)
+            )
 
     def forward(self, vp_features, end_points):
         B, _, num_seed = vp_features.size()
-        vp_features = F.relu(self.conv1(vp_features))
-        vp_features = self.conv_swad(vp_features)
-        vp_features = vp_features.view(B, 2, self.num_angle, self.num_depth, num_seed)
-        vp_features = vp_features.permute(0, 1, 4, 2, 3)
+        vp_features_relu = F.relu(self.conv1(vp_features))
+        vp_out = self.conv_swad(vp_features_relu)
+        vp_out = vp_out.view(B, 2, self.num_angle, self.num_depth, num_seed)
+        vp_out = vp_out.permute(0, 1, 4, 2, 3)
 
         # split prediction
-        end_points['grasp_score_pred'] = vp_features[:, 0]  # B * num_seed * num angle * num_depth
-        end_points['grasp_width_pred'] = vp_features[:, 1]
+        end_points['grasp_score_pred'] = vp_out[:, 0]  # B * num_seed * num angle * num_depth
+        end_points['grasp_width_pred'] = vp_out[:, 1]
+        
+        # Stable score prediction (if enabled)
+        if self.enable_stable_score:
+            stable_raw = self.conv_stable(vp_features_relu)  # (B, num_angle, num_seed)
+            stable_raw = stable_raw.permute(0, 2, 1)  # (B, num_seed, num_angle)
+            stable_score = torch.sigmoid(stable_raw)  # Normalize to [0, 1]
+            end_points['grasp_stable_pred'] = stable_score  # (B, M, 12)
+        
         return end_points

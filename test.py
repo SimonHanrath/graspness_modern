@@ -36,6 +36,8 @@ parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
                     help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
 parser.add_argument('--enable_flash', action='store_true', default=False,
                     help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
+parser.add_argument('--enable_stable_score', action='store_true', default=False,
+                    help='Enable stable score prediction to reweight grasps during ranking [default: False]')
 cfgs = parser.parse_args()
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
@@ -70,9 +72,13 @@ def inference():
         backbone=cfgs.backbone,
         ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
         enable_flash=cfgs.enable_flash,
+        enable_stable_score=cfgs.enable_stable_score,
     )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
+    
+    if cfgs.enable_stable_score:
+        print("Stable score enabled: grasps will be reweighted by (1 - stable_score) during ranking")
     # Load checkpoint
     checkpoint = torch.load(cfgs.checkpoint_path)
     net.load_state_dict(checkpoint['model_state_dict'], strict=False)
@@ -95,7 +101,7 @@ def inference():
         # Forward pass
         with torch.no_grad():
             end_points = net(batch_data)
-            grasp_preds = pred_decode(end_points)
+            grasp_preds = pred_decode(end_points, use_stable_score=cfgs.enable_stable_score)
 
         # Debug output for first batch
         if batch_idx == 0:

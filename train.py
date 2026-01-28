@@ -69,6 +69,10 @@ parser.add_argument('--accumulation_steps', type=int, default=1,
                     help='Gradient accumulation steps (simulate larger batch with batch_size=1) [default: 1]')
 parser.add_argument('--backbone_lr_scale', type=float, default=None,
                     help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
+parser.add_argument('--enable_stable_score', action='store_true', default=False,
+                    help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
+parser.add_argument('--lambda_stable', type=float, default=1.0,
+                    help='Weight for stable score loss term [default: 1.0]')
 
 
 cfgs = parser.parse_args()
@@ -109,16 +113,22 @@ def create_dataloaders():
     use_rgb = (cfgs.backbone == 'transformer_pretrained')
     if use_rgb:
         log_string("Using RGB features for 6-channel input (XYZ + RGB) - required for transformer_pretrained")
+    
+    # Stable score settings (labels auto-computed by dataset if missing)
+    if cfgs.enable_stable_score:
+        log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='train',
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
-                                    remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb)
+                                    remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
+                                    enable_stable_score=cfgs.enable_stable_score)
     log_string('train dataset length: ' + str(len(train_dataset)))
 
     # Validation dataset (use specified validation split without augmentation)
     val_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.val_split,
                                   num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
-                                  remove_outlier=True, augment=False, load_label=True, use_rgb=use_rgb)
+                                  remove_outlier=True, augment=False, load_label=True, use_rgb=use_rgb,
+                                  enable_stable_score=cfgs.enable_stable_score)
     log_string('validation dataset length: ' + str(len(val_dataset)))
 
     # For overfitting test, use only 1 sample repeated 256 times
@@ -151,9 +161,13 @@ def create_model_and_optimizer():
         backbone=cfgs.backbone,
         ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
         enable_flash=cfgs.enable_flash,
+        enable_stable_score=cfgs.enable_stable_score,
     )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
+    
+    if cfgs.enable_stable_score:
+        log_string(f"Stable score prediction enabled (lambda_stable={cfgs.lambda_stable})")
 
     # Determine backbone LR scale (default: 0.1 for pretrained, 1.0 otherwise)
     backbone_lr_scale = cfgs.backbone_lr_scale
@@ -276,7 +290,9 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
         # Forward pass with autocast for mixed precision
         with autocast(enabled=cfgs.use_amp, device_type=device.type):
             end_points = net(batch_data_label)
-            loss, end_points = get_loss(end_points)
+            loss, end_points = get_loss(end_points, 
+                                        enable_stable_score=cfgs.enable_stable_score,
+                                        lambda_stable=cfgs.lambda_stable)
             # Scale loss for gradient accumulation
             loss = loss / cfgs.accumulation_steps
         
@@ -345,7 +361,9 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
             # Use autocast for validation as well
             with autocast(enabled=cfgs.use_amp):
                 end_points = net(batch_data_label)
-                loss, end_points = get_loss(end_points)
+                loss, end_points = get_loss(end_points,
+                                            enable_stable_score=cfgs.enable_stable_score,
+                                            lambda_stable=cfgs.lambda_stable)
 
             for key in end_points:
                 if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
