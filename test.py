@@ -90,13 +90,14 @@ def inference():
     net.eval()
     tic = time.time()
     for batch_idx, batch_data in enumerate(test_dataloader):
+        # Transfer to GPU with non_blocking=True for async copy
         for key in batch_data:
             if 'list' in key:
                 for i in range(len(batch_data[key])):
                     for j in range(len(batch_data[key][i])):
-                        batch_data[key][i][j] = batch_data[key][i][j].to(device)
+                        batch_data[key][i][j] = batch_data[key][i][j].to(device, non_blocking=True)
             else:
-                batch_data[key] = batch_data[key].to(device)
+                batch_data[key] = batch_data[key].to(device, non_blocking=True)
 
         # Forward pass
         with torch.no_grad():

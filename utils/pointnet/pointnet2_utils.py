@@ -126,7 +126,8 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         p1_f = p1.float()
         p2_f = p2.float()
         dists = torch.cdist(p1_f, p2_f, p=2.0) ** 2
-        knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False, sorted=True)
+        # sorted=False: faster, order doesn't matter for downstream aggregation
+        knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False, sorted=False)
         return knn_dists, knn_idx
     
     # Chunked processing for large point clouds
@@ -139,7 +140,8 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         p1_chunk = p1[:, i:end_i].float()
         
         dists_chunk = torch.cdist(p1_chunk, p2_f, p=2.0) ** 2
-        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=True)
+        # sorted=False: faster, order doesn't matter for downstream aggregation
+        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=False)
         all_dists.append(knn_dists)
         all_idx.append(knn_idx)
         del dists_chunk  # Free memory immediately
@@ -253,90 +255,6 @@ def ball_query(radius: float,
     gather_last = torch.gather(idx, -1, last_valid_pos.expand(-1, -1, 1))  # (B,P,1)
     idx = torch.where(mask, idx, gather_last.expand(-1, -1, K))
     return idx
-
-class QueryAndGroup(nn.Module):
-    r"""
-    Groups with a ball query of radius
-
-    Parameters
-    ---------
-    radius : float32
-        Radius of ball
-    nsample : int32
-        Maximum number of features to gather in the ball
-    """
-
-    def __init__(self, radius, nsample, use_xyz=True, ret_grouped_xyz=False, normalize_xyz=False, sample_uniformly=False, ret_unique_cnt=False):
-        # type: (QueryAndGroup, float, int, bool) -> None
-        super(QueryAndGroup, self).__init__()
-        self.radius, self.nsample, self.use_xyz = radius, nsample, use_xyz
-        self.ret_grouped_xyz = ret_grouped_xyz
-        self.normalize_xyz = normalize_xyz
-        self.sample_uniformly = sample_uniformly
-        self.ret_unique_cnt = ret_unique_cnt
-        if self.ret_unique_cnt:
-            assert(self.sample_uniformly)
-
-    def forward(self, xyz, new_xyz, features=None):
-        # type: (QueryAndGroup, torch.Tensor. torch.Tensor, torch.Tensor) -> Tuple[Torch.Tensor]
-        r"""
-        Parameters
-        ----------
-        xyz : torch.Tensor
-            xyz coordinates of the features (B, N, 3)
-        new_xyz : torch.Tensor
-            centriods (B, npoint, 3)
-        features : torch.Tensor
-            Descriptors of the features (B, C, N)
-
-        Returns
-        -------
-        new_features : torch.Tensor
-            (B, 3 + C, npoint, nsample) tensor
-        """
-        idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
-
-        if self.sample_uniformly:
-            unique_cnt = torch.zeros((idx.shape[0], idx.shape[1]))
-            for i_batch in range(idx.shape[0]):
-                for i_region in range(idx.shape[1]):
-                    unique_ind = torch.unique(idx[i_batch, i_region, :])
-                    num_unique = unique_ind.shape[0]
-                    unique_cnt[i_batch, i_region] = num_unique
-                    sample_ind = torch.randint(0, num_unique, (self.nsample - num_unique,), dtype=torch.long)
-                    all_ind = torch.cat((unique_ind, unique_ind[sample_ind]))
-                    idx[i_batch, i_region, :] = all_ind
-
-
-        xyz_trans = xyz.transpose(1, 2).contiguous()
-        grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
-        grouped_xyz -= new_xyz.transpose(1, 2).unsqueeze(-1)
-        if self.normalize_xyz:
-            grouped_xyz /= self.radius
-
-        if features is not None:
-            grouped_features = grouping_operation(features, idx)
-            if self.use_xyz:
-                new_features = torch.cat(
-                    [grouped_xyz, grouped_features], dim=1
-                )  # (B, C + 3, npoint, nsample)
-            else:
-                new_features = grouped_features
-        else:
-            assert (
-                self.use_xyz
-            ), "Cannot have not features and not use xyz as a feature!"
-            new_features = grouped_xyz
-
-        ret = [new_features]
-        if self.ret_grouped_xyz:
-            ret.append(grouped_xyz)
-        if self.ret_unique_cnt:
-            ret.append(unique_cnt)
-        if len(ret) == 1:
-            return ret[0]
-        else:
-            return tuple(ret)
 
 class QueryAndGroup(nn.Module):
     """
@@ -551,13 +469,13 @@ class CylinderQueryAndGroup(nn.Module):
         idx = cylinder_query(self.radius, self.hmin, self.hmax, self.nsample, xyz, new_xyz, rot.view(B, npoint, 9))
 
         if self.sample_uniformly:
-            unique_cnt = torch.zeros((idx.shape[0], idx.shape[1]))
+            unique_cnt = torch.zeros((idx.shape[0], idx.shape[1]), device=idx.device)
             for i_batch in range(idx.shape[0]):
                 for i_region in range(idx.shape[1]):
                     unique_ind = torch.unique(idx[i_batch, i_region, :])
                     num_unique = unique_ind.shape[0]
                     unique_cnt[i_batch, i_region] = num_unique
-                    sample_ind = torch.randint(0, num_unique, (self.nsample - num_unique,), dtype=torch.long)
+                    sample_ind = torch.randint(0, num_unique, (self.nsample - num_unique,), dtype=torch.long, device=idx.device)
                     all_ind = torch.cat((unique_ind, unique_ind[sample_ind]))
                     idx[i_batch, i_region, :] = all_ind
 

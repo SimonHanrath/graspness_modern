@@ -112,13 +112,14 @@ def get_grasps(points, colors=None):
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
+    # Transfer to GPU (non_blocking for potential overlap)
     for key in batch_data:
         if 'list' in key:
             for i in range(len(batch_data[key])):
                 for j in range(len(batch_data[key][i])):
-                    batch_data[key][i][j] = batch_data[key][i][j].to(device)
+                    batch_data[key][i][j] = batch_data[key][i][j].to(device, non_blocking=True)
         else:
-            batch_data[key] = batch_data[key].to(device)
+            batch_data[key] = batch_data[key].to(device, non_blocking=True)
     
     # Forward pass
     with torch.inference_mode():

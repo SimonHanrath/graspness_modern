@@ -10,6 +10,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.multiprocessing as mp
 from torch.amp import GradScaler, autocast
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 # Set multiprocessing start method to avoid CUDA context issues with DataLoader workers
 try:
@@ -73,24 +76,101 @@ parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
 parser.add_argument('--lambda_stable', type=float, default=1.0,
                     help='Weight for stable score loss term [default: 1.0]')
+# DDP arguments (set automatically by torchrun, but can be overridden)
+parser.add_argument('--local_rank', type=int, default=-1,
+                    help='Local rank for distributed training (set by torchrun)')
 
 
 cfgs = parser.parse_args()
 
+# =============================================
+# Distributed Training Setup
+# =============================================
+def is_distributed():
+    """Check if we're running in distributed mode."""
+    return dist.is_available() and dist.is_initialized()
+
+def is_main_process():
+    """Check if this is the main process (rank 0 or non-distributed)."""
+    if not is_distributed():
+        return True
+    return dist.get_rank() == 0
+
+def get_world_size():
+    """Get the number of processes in the distributed group."""
+    if not is_distributed():
+        return 1
+    return dist.get_world_size()
+
+def get_rank():
+    """Get the rank of the current process."""
+    if not is_distributed():
+        return 0
+    return dist.get_rank()
+
+def setup_distributed():
+    """Initialize distributed training if running with torchrun."""
+    # Check if we're running in distributed mode (torchrun sets these env vars)
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        
+        # Initialize the distributed backend
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank
+        )
+        
+        # Set the device for this process
+        torch.cuda.set_device(local_rank)
+        
+        return local_rank, rank, world_size
+    else:
+        # Not running distributed
+        return 0, 0, 1
+
+def cleanup_distributed():
+    """Clean up distributed training."""
+    if is_distributed():
+        dist.destroy_process_group()
+
+# Initialize distributed training
+LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE = setup_distributed()
+
 
 EPOCH_CNT = 0
 CHECKPOINT_PATH = cfgs.checkpoint_path if cfgs.checkpoint_path is not None and cfgs.resume else None
-if not os.path.exists(cfgs.log_dir):
+if not os.path.exists(cfgs.log_dir) and is_main_process():
     os.makedirs(cfgs.log_dir)
 
-LOG_FOUT = open(os.path.join(cfgs.log_dir, 'log_train.txt'), 'a')
-LOG_FOUT.write(str(cfgs) + '\n')
+# Only main process writes to log file
+if is_main_process():
+    LOG_FOUT = open(os.path.join(cfgs.log_dir, 'log_train.txt'), 'a')
+    LOG_FOUT.write(str(cfgs) + '\n')
+    if is_distributed():
+        LOG_FOUT.write(f'Distributed training: world_size={WORLD_SIZE}, local_rank={LOCAL_RANK}\n')
+else:
+    LOG_FOUT = None
 
 
 def log_string(out_str):
-    LOG_FOUT.write(out_str + '\n')
-    LOG_FOUT.flush()
-    print(out_str)
+    if is_main_process():
+        LOG_FOUT.write(out_str + '\n')
+        LOG_FOUT.flush()
+        print(out_str)
+
+
+# For non-main processes, still allow printing but not logging
+def log_string_all(out_str):
+    """Log from all processes (for debugging distributed issues)."""
+    prefix = f'[Rank {get_rank()}] ' if is_distributed() else ''
+    print(prefix + out_str)
+    if is_main_process() and LOG_FOUT:
+        LOG_FOUT.write(out_str + '\n')
+        LOG_FOUT.flush()
 
 
 # Init datasets and dataloaders 
@@ -100,7 +180,7 @@ def my_worker_init_fn(worker_id):
 
 
 def create_dataloaders():
-    """Create datasets and dataloaders. Only called in main process."""
+    """Create datasets and dataloaders. Each process creates its own."""
     # Load grasp labels (use lazy loading if specified to save memory with multiple workers)
     if cfgs.lazy_grasp_labels:
         log_string("Using lazy loading for grasp labels (memory-efficient mode)")
@@ -138,23 +218,34 @@ def create_dataloaders():
         cfgs.max_epoch = 20
         log_string('Single-sample overfitting test enabled: 256x repeated, max_epoch set to 20')
     
-    train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, shuffle=True,
+    # Create distributed samplers if running in distributed mode
+    train_sampler = None
+    val_sampler = None
+    if is_distributed():
+        train_sampler = DistributedSampler(train_dataset, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+        log_string(f'Using DistributedSampler with {WORLD_SIZE} processes')
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, 
+                                  shuffle=(train_sampler is None),  # Only shuffle if no sampler
+                                  sampler=train_sampler,
                                   num_workers=cfgs.num_workers, pin_memory=True, 
                                   persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
                                   worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
     log_string('train dataloader length: ' + str(len(train_dataloader)))
 
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False,
+                                sampler=val_sampler,
                                 num_workers=cfgs.num_workers, pin_memory=True,
                                 persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
                                 worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
     log_string('validation dataloader length: ' + str(len(val_dataloader)))
     
-    return train_dataloader, val_dataloader
+    return train_dataloader, val_dataloader, train_sampler, val_sampler
 
 
 def create_model_and_optimizer():
-    """Create model, optimizer, and scaler. Only called in main process."""
+    """Create model, optimizer, and scaler. Each process creates its own."""
     net = GraspNet(
         seed_feat_dim=cfgs.seed_feat_dim, 
         is_training=True, 
@@ -163,7 +254,14 @@ def create_model_and_optimizer():
         enable_flash=cfgs.enable_flash,
         enable_stable_score=cfgs.enable_stable_score,
     )
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
+    # Set device based on distributed or single-GPU mode
+    if is_distributed():
+        device = torch.device(f"cuda:{LOCAL_RANK}")
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
     net.to(device)
     
     if cfgs.enable_stable_score:
@@ -233,13 +331,27 @@ def create_model_and_optimizer():
 
     start_epoch = 0
     if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
-        checkpoint = torch.load(CHECKPOINT_PATH)
-        net.load_state_dict(checkpoint['model_state_dict'])
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+        # Handle both DDP and non-DDP checkpoints
+        state_dict = checkpoint['model_state_dict']
+        # Remove 'module.' prefix if loading from DDP checkpoint into non-DDP model
+        if not is_distributed() and any(k.startswith('module.') for k in state_dict.keys()):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        # Add 'module.' prefix if loading non-DDP checkpoint into DDP model (handled after DDP wrap)
+        net.load_state_dict(state_dict, strict=False)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if 'scaler_state_dict' in checkpoint and cfgs.use_amp:
             scaler.load_state_dict(checkpoint['scaler_state_dict'])
         start_epoch = checkpoint['epoch']
         log_string("-> loaded checkpoint %s (epoch: %d)" % (CHECKPOINT_PATH, start_epoch))
+    
+    # Wrap model in DDP if running distributed
+    if is_distributed():
+        # find_unused_parameters=True is needed because some parameters might not be used 
+        # in every forward pass (e.g., stable_score_head when disabled)
+        net = DDP(net, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK, 
+                  find_unused_parameters=True)
+        log_string(f"Model wrapped in DistributedDataParallel (device_ids=[{LOCAL_RANK}])")
     
     return net, optimizer, scaler, start_epoch, device
 
@@ -276,16 +388,20 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     net.train()
     batch_interval = 20
     
+    # Only show progress bar on main process to avoid duplicates
+    data_iter = tqdm(enumerate(train_dataloader), desc='Training', 
+                     disable=not is_main_process(), total=len(train_dataloader))
     
-    for batch_idx, batch_data_label in tqdm(enumerate(train_dataloader), desc='Training'):
+    for batch_idx, batch_data_label in data_iter:
             
+        # Transfer to GPU with non_blocking=True for async copy (works with pin_memory=True)
         for key in batch_data_label:
             if 'list' in key:
                 for i in range(len(batch_data_label[key])):
                     for j in range(len(batch_data_label[key][i])):
-                        batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device)
+                        batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device, non_blocking=True)
             else:
-                batch_data_label[key] = batch_data_label[key].to(device)
+                batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
 
         # Forward pass with autocast for mixed precision
         with autocast(enabled=cfgs.use_amp, device_type=device.type):
@@ -328,16 +444,21 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
         if (batch_idx + 1) % batch_interval == 0:
             log_string(' ----epoch: %03d  ---- batch: %03d ----' % (EPOCH_CNT, batch_idx + 1))
             for key in sorted(stat_dict.keys()):
-                train_writer.add_scalar(key, stat_dict[key] / batch_interval,
-                                        (EPOCH_CNT * len(train_dataloader) + batch_idx) * cfgs.batch_size)
+                if is_main_process() and train_writer is not None:
+                    train_writer.add_scalar(key, stat_dict[key] / batch_interval,
+                                            (EPOCH_CNT * len(train_dataloader) + batch_idx) * cfgs.batch_size)
                 log_string('mean %s: %f' % (key, stat_dict[key] / batch_interval))
                 stat_dict[key] = 0
     
-    # Log epoch-level averages to TensorBoard
+    # Log epoch-level averages to TensorBoard (only main process)
     num_batches = len(train_dataloader)
-    for key in sorted(epoch_stat_dict.keys()):
-        avg_value = epoch_stat_dict[key] / num_batches
-        train_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
+    if is_main_process() and train_writer is not None:
+        for key in sorted(epoch_stat_dict.keys()):
+            avg_value = epoch_stat_dict[key] / num_batches
+            train_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
+        
+        # Flush to ensure data is written to disk
+        train_writer.flush()
     
     # Return epoch average loss
     return epoch_stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in epoch_stat_dict else 0
@@ -348,15 +469,20 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
     stat_dict = {}  # collect statistics
     net.eval()
     
+    # Only show progress bar on main process to avoid duplicates
+    data_iter = tqdm(enumerate(val_dataloader), desc='Validating',
+                     disable=not is_main_process(), total=len(val_dataloader))
+    
     with torch.inference_mode():
-        for batch_idx, batch_data_label in tqdm(enumerate(val_dataloader), desc='Validating'):
+        for batch_idx, batch_data_label in data_iter:
+            # Transfer to GPU with non_blocking=True for async copy (works with pin_memory=True)
             for key in batch_data_label:
                 if 'list' in key:
                     for i in range(len(batch_data_label[key])):
                         for j in range(len(batch_data_label[key][i])):
-                            batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device)
+                            batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device, non_blocking=True)
                 else:
-                    batch_data_label[key] = batch_data_label[key].to(device)
+                    batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
 
             # Use autocast for validation as well
             with autocast(enabled=cfgs.use_amp):
@@ -371,25 +497,37 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
                         stat_dict[key] = 0
                     stat_dict[key] += end_points[key].item()
     
-    # Calculate averages and log to TensorBoard
+    # Calculate averages and log to TensorBoard (only main process)
     num_batches = len(val_dataloader)
     log_string('---- Validation Results ----')
     for key in sorted(stat_dict.keys()):
         avg_value = stat_dict[key] / num_batches
         # Log with 'epoch_' prefix to match training metrics for comparison
-        val_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
+        if is_main_process() and val_writer is not None:
+            val_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
         log_string('mean %s: %f' % (key, avg_value))
+    
+    # Flush to ensure data is written to disk
+    if is_main_process() and val_writer is not None:
+        val_writer.flush()
     
     avg_loss = stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in stat_dict else 0
     net.train()
     return avg_loss
 
 
-def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dataloader, train_writer, val_writer):
+def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dataloader, 
+          train_writer, val_writer, train_sampler=None, val_sampler=None):
     global EPOCH_CNT
     best_val_loss = float('inf')
     
     for epoch in range(start_epoch, cfgs.max_epoch):
+        # Set epoch on distributed sampler for proper shuffling
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        if val_sampler is not None:
+            val_sampler.set_epoch(epoch)
+        
         EPOCH_CNT = epoch
         log_string('**** EPOCH %03d ****' % epoch)
         log_string('Current learning rate: head=%.6f, backbone=%.6f' % (
@@ -398,9 +536,10 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dat
         ))
         log_string(str(datetime.now()))
         
-        # Log learning rate to TensorBoard
-        train_writer.add_scalar('learning_rate/head', get_current_lr(epoch, cfgs.learning_rate), epoch)
-        train_writer.add_scalar('learning_rate/backbone', get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0))), epoch)
+        # Log learning rate to TensorBoard (only main process)
+        if is_main_process():
+            train_writer.add_scalar('learning_rate/head', get_current_lr(epoch, cfgs.learning_rate), epoch)
+            train_writer.add_scalar('learning_rate/backbone', get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0))), epoch)
         
         # Reset numpy seed.
         # REF: https://github.com/pytorch/pytorch/issues/5059
@@ -427,31 +566,50 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dat
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_save_path = os.path.join(cfgs.log_dir, cfgs.model_name + '_best.tar')
+            # Get the underlying model if wrapped in DDP
+            model_to_save = net.module if is_distributed() else net
             save_dict = {'epoch': epoch + 1, 
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'model_state_dict': net.state_dict(),
+                        'model_state_dict': model_to_save.state_dict(),
                         'val_loss': val_loss,
                         'train_loss': train_loss}
             torch.save(save_dict, best_save_path)
             log_string('**** Saved best model with val_loss: %.4f (train_loss: %.4f) ****' % (val_loss, train_loss))
     """
-        # Save regular checkpoint
-        save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
-                     'model_state_dict': net.state_dict(),
-                     'scaler_state_dict': scaler.state_dict()}
-        torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model_name + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
+        # Save regular checkpoint (only from main process)
+        if is_main_process():
+            # Get the underlying model if wrapped in DDP
+            model_to_save = net.module if is_distributed() else net
+            save_dict = {'epoch': epoch + 1, 'optimizer_state_dict': optimizer.state_dict(),
+                         'model_state_dict': model_to_save.state_dict(),
+                         'scaler_state_dict': scaler.state_dict()}
+            torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model_name + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
 
 
 if __name__ == '__main__':
-    # Create dataloaders (only in main process)
-    TRAIN_DATALOADER, VAL_DATALOADER = create_dataloaders()
+    # Create dataloaders (each process creates its own for DDP)
+    TRAIN_DATALOADER, VAL_DATALOADER, TRAIN_SAMPLER, VAL_SAMPLER = create_dataloaders()
     
-    # Create model, optimizer, and scaler (only in main process)
+    # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
     
-    # TensorBoard Visualizers
-    TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
-    VAL_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'val'))
+    # TensorBoard Visualizers (only main process writes to TensorBoard)
+    if is_main_process():
+        TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
+        VAL_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'val'))
+    else:
+        # Create dummy writers for non-main processes (won't be used but simplifies code)
+        TRAIN_WRITER = None
+        VAL_WRITER = None
     
     # Start training
-    train(start_epoch, net, optimizer, scaler, device, TRAIN_DATALOADER, VAL_DATALOADER, TRAIN_WRITER, VAL_WRITER)
+    try:
+        train(start_epoch, net, optimizer, scaler, device, TRAIN_DATALOADER, VAL_DATALOADER, 
+              TRAIN_WRITER, VAL_WRITER, TRAIN_SAMPLER, VAL_SAMPLER)
+    finally:
+        # Ensure TensorBoard writers are properly closed
+        if is_main_process():
+            TRAIN_WRITER.close()
+            VAL_WRITER.close()
+        # Clean up distributed training
+        cleanup_distributed()

@@ -9,6 +9,8 @@ Provides efficient kNN implementations using pure PyTorch with:
 
 import torch
 
+from utils.pointnet.pointnet2_utils import knn_points_torch
+
 
 # =============================================================================
 # Core Implementation - Flat Format (N, 3)
@@ -18,7 +20,15 @@ import torch
 def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
               query_pos: torch.Tensor = None, query_batch: torch.Tensor = None) -> torch.Tensor:
     """
-    Find k-nearest neighbors for each point using pure PyTorch.        
+    Find k-nearest neighbors for each point using pure PyTorch.
+    
+    This is a thin wrapper around knn_points_torch that:
+    - Converts flat (N, 3) format with batch indices to batched (B, N, D) format
+    - For batch=None: reshapes to (1, N, 3), calls knn_points_torch, reshapes back
+    - For batch!=None: loops over batches (variable sizes), calls knn_points_torch
+      per batch with (1, n_b, 3), then maps local indices to global indices
+    - Handles padding when k > number of reference points
+    
     Args:
         pos: (N, 3) reference point positions (we search neighbors IN this set)
         k: number of neighbors to find
@@ -40,16 +50,22 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
     N = pos.shape[0]
     Q = query_pos.shape[0]
     
-    # Ensure float for distance computation
-    pos = pos.float()
-    query_pos = query_pos.float()
-    
     if batch is None:
-        # Single batch - compute pairwise distances
+        # Single batch
         k_actual = min(k, N)
         
-        dist = torch.cdist(query_pos, pos)  # (Q, N)
-        _, idx = dist.topk(k_actual, dim=-1, largest=False)  # (Q, k)
+        # Fast path for k=1: argmin is faster than topk (this is a common case in our pipeline)
+        if k_actual == 1:
+            dist = torch.cdist(query_pos.float(), pos.float())  # (Q, N)
+            idx = dist.argmin(dim=-1, keepdim=True)  # (Q, 1)
+            return idx
+        
+        # General case: use knn_points_torch with (B, N, D) format
+        p1 = query_pos.unsqueeze(0)  # (1, Q, 3)
+        p2 = pos.unsqueeze(0)        # (1, N, 3)
+        
+        _, idx = knn_points_torch(p1, p2, K=k_actual)  # (1, Q, k_actual)
+        idx = idx.squeeze(0)  # (Q, k_actual)
         
         # Pad if k > N
         if k > N:
@@ -58,7 +74,9 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
         
         return idx
     else:
-        # Batched processing to find neighbors within same batch only
+        # Batched processing: variable batch sizes require per-batch loop
+        # Each batch is processed separately via knn_points_torch, then
+        # local indices are mapped to global indices into pos
         unique_batches = torch.unique(batch)
         idx = torch.zeros(Q, k, dtype=torch.long, device=device)
         
@@ -80,17 +98,18 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
                 
             k_b = min(k, n_b)
             
-            #if q_b * n_b < 50_000_000:
-            dist_b = torch.cdist(query_pos_b, pos_b)
-            _, local_idx = dist_b.topk(k_b, dim=-1, largest=False)
-            """else: TODO: think about removing this
-                local_idx = torch.zeros(q_b, k_b, dtype=torch.long, device=device)
-                chunk_size = max(1, 25_000_000 // n_b)
-                for i in range(0, q_b, chunk_size):
-                    end_i = min(i + chunk_size, q_b)
-                    dist_chunk = torch.cdist(query_pos_b[i:end_i], pos_b)
-                    _, local_idx[i:end_i] = dist_chunk.topk(k_b, dim=-1, largest=False)
-            """
+            # Fast path for k=1: argmin is faster than topk
+            if k_b == 1:
+                dist_b = torch.cdist(query_pos_b.float(), pos_b.float())  # (q_b, n_b)
+                local_idx = dist_b.argmin(dim=-1, keepdim=True)  # (q_b, 1)
+            else:
+                # Use knn_points_torch with (1, q_b, 3) and (1, n_b, 3)
+                p1_b = query_pos_b.unsqueeze(0)  # (1, q_b, 3)
+                p2_b = pos_b.unsqueeze(0)        # (1, n_b, 3)
+                
+                _, local_idx = knn_points_torch(p1_b, p2_b, K=k_b)  # (1, q_b, k_b)
+                local_idx = local_idx.squeeze(0)  # (q_b, k_b)
+            
             # Map local indices to global indices
             global_idx = ref_indices[local_idx]
             

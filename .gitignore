@@ -6,3 +6,5 @@
 __pycache__/
 *.pyc
 *.pth
+/old_stuff
+*slurm
