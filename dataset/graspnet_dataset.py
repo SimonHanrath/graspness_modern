@@ -76,10 +76,9 @@ class GraspNetDataset(Dataset):
                         "Failed to compute stable labels. Please install trimesh: pip install trimesh"
                     )
         
-        # Cache for collision labels - use LRU cache with max size to limit memory
-        # This allows recently accessed scenes to stay in memory while releasing old ones
-        self._collision_cache = {}
-        self._collision_cache_maxsize = 5  # Keep at most 5 scenes in cache (~900MB)
+        # Pre-load collision labels into memory (like original implementation)
+        # This uses ~25-30GB RAM but eliminates the data loading bottleneck
+        self.collision_labels = {}
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
@@ -102,7 +101,7 @@ class GraspNetDataset(Dataset):
         self.scenename = []
         self.frameid = []
         self.graspnesspath = []
-        for x in tqdm(self.sceneIds, desc='Loading data paths...'):
+        for x in tqdm(self.sceneIds, desc='Loading data paths and collision labels...'):
             for img_num in range(256):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
@@ -111,8 +110,12 @@ class GraspNetDataset(Dataset):
                 self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
-            # REMOVED: No longer loading all collision labels at initialization
-            # This prevents each DataLoader worker from holding 3GB+ of collision data in memory
+            # Pre-load collision labels for this scene
+            if self.load_label:
+                collision_labels_npz = np.load(os.path.join(root, 'collision_label', x.strip(), 'collision_labels.npz'))
+                self.collision_labels[x.strip()] = {}
+                for i in range(len(collision_labels_npz)):
+                    self.collision_labels[x.strip()][i] = collision_labels_npz['arr_{}'.format(i)]
 
     def scene_list(self):
         return self.scenename
@@ -151,34 +154,6 @@ class GraspNetDataset(Dataset):
         self._stable_labels_cache[obj_idx] = stable_labels
         return stable_labels
     
-    def _load_collision_labels(self, scene):
-        """
-        Lazy load collision labels for a specific scene on-demand.
-        Uses an LRU cache to keep recently accessed scenes in memory.
-        This prevents memory explosion with multiple DataLoader workers.
-        """
-        if scene in self._collision_cache:
-            return self._collision_cache[scene]
-        
-        # Load collision labels for this scene
-        collision_labels_path = os.path.join(self.root, 'collision_label', scene, 'collision_labels.npz')
-        collision_labels_npz = np.load(collision_labels_path)
-        
-        # Convert to dictionary format
-        collision_dict = {}
-        for i in range(len(collision_labels_npz)):
-            collision_dict[i] = collision_labels_npz['arr_{}'.format(i)]
-        
-        # Implement simple LRU: if cache is full, remove oldest entry
-        if len(self._collision_cache) >= self._collision_cache_maxsize:
-            # Remove the first (oldest) item
-            oldest_scene = next(iter(self._collision_cache))
-            del self._collision_cache[oldest_scene]
-        
-        # Add to cache
-        self._collision_cache[scene] = collision_dict
-        return collision_dict
-
     def __len__(self):
         return len(self.depthpath)
 
@@ -343,8 +318,7 @@ class GraspNetDataset(Dataset):
         grasp_widths_list = []
         grasp_scores_list = []
         
-        # Lazy load collision labels for this scene only when needed
-        collision_labels_scene = self._load_collision_labels(scene) if self.load_label else None
+        collision_labels_scene = self.collision_labels.get(scene)
         
         grasp_stable_list = []  # List of stable labels per object
         
