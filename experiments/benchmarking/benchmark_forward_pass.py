@@ -22,9 +22,6 @@ from models.loss import get_loss
 from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
 DATASET_ROOT = "/datasets/graspnet"
 CAMERA = "realsense"
 CHECKPOINT = "/workspace/logs/gsnet_resunet_stable_score/gsnet_resunet_epoch08.tar"
@@ -51,7 +48,7 @@ def benchmark_forward_pass(net, dataloader, device, n_warmup=5, n_runs=20):
     
     batch_data = transfer_batch_to_device(next(iter(dataloader)), device)
     
-    # Warmup (JIT compilation happens here)
+    # Warmup
     print(f"Warming up ({n_warmup} iterations)...", end=" ", flush=True)
     warmup_times = []
     for _ in range(n_warmup):
@@ -62,7 +59,6 @@ def benchmark_forward_pass(net, dataloader, device, n_warmup=5, n_runs=20):
         torch.cuda.synchronize()
         warmup_times.append(time.perf_counter() - start)
         print(f"{warmup_times[-1]*1000:.0f}ms", end=" ", flush=True)
-    print()
     
     # Timed runs
     print(f"Benchmarking ({n_runs} iterations)...", end=" ", flush=True)
@@ -74,7 +70,6 @@ def benchmark_forward_pass(net, dataloader, device, n_warmup=5, n_runs=20):
             _ = net(batch_data.copy())
         torch.cuda.synchronize()
         times.append(time.perf_counter() - start)
-    print("done")
     
     return np.array(warmup_times), np.array(times)
 
@@ -99,7 +94,6 @@ def benchmark_backward_pass(net, dataloader, device, n_warmup=5, n_runs=20):
         torch.cuda.synchronize()
         warmup_times.append(time.perf_counter() - start)
         print(f"{warmup_times[-1]*1000:.0f}ms", end=" ", flush=True)
-    print()
     
     # Timed runs
     print(f"Benchmarking ({n_runs} iterations)...", end=" ", flush=True)
@@ -115,7 +109,6 @@ def benchmark_backward_pass(net, dataloader, device, n_warmup=5, n_runs=20):
         
         torch.cuda.synchronize()
         times.append(time.perf_counter() - start)
-    print("done")
     
     return np.array(warmup_times), np.array(times)
 

@@ -31,8 +31,7 @@ class RandomDropout(nn.Module):
         return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
 
 
-
-def furthest_point_sample(xyz, npoint) -> torch.Tensor:
+def furthest_point_sample(xyz, npoint) -> torch.Tensor: # We could replace this with torch-cluster's fps, but this would mean adding a dependency
     r"""
     Uses iterative furthest point sampling to select a set of npoint features that have the largest
     minimum distance
@@ -71,6 +70,36 @@ def furthest_point_sample(xyz, npoint) -> torch.Tensor:
         farthest = distance.argmax(-1)
     
     return centroids  # (B, npoint)
+
+
+def random_points_sample(xyz, npoint) -> torch.Tensor:
+    r"""
+    Randomly samples npoint indices from the input point cloud.
+    This is a fast alternative to furthest_point_sample (FPS) that trades
+    spatial coverage quality for speed. O(npoint) vs O(N * npoint) for FPS.
+
+    Parameters
+    ----------
+    xyz : torch.Tensor
+        (B, N, 3) tensor where N > npoint
+    npoint : int32
+        number of features in the sampled set
+
+    Returns
+    -------
+    torch.Tensor
+        (B, npoint) tensor containing the randomly sampled indices
+    """
+    B, N, _ = xyz.shape
+    device = xyz.device
+    
+    # Generate random permutation indices for each batch and take first npoint
+    # torch.randperm doesn't support batched operation, so we use torch.rand + argsort
+    rand_scores = torch.rand(B, N, device=device)
+    # argsort gives indices that would sort the random scores - effectively a random permutation
+    indices = torch.argsort(rand_scores, dim=1)[:, :npoint]
+    
+    return indices  # (B, npoint)
 
 
 

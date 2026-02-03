@@ -24,7 +24,7 @@ from models.backbone_pointnet2 import PointNet2Backbone, PointNet2BackboneLight
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
 from utils.label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
-from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operation
+from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operation, random_points_sample
 
 
 class GraspNet(nn.Module):
@@ -118,7 +118,7 @@ class GraspNet(nn.Module):
         extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
         
         # Ensure minimum spatial shape to handle 4 stride 2 layers (downsample by 16)
-        # Without this, flat point clouds (e.g., Z=1) would cause spatial shape reach zero error
+        # Without this, flat point clouds (e.g. Z=1) would cause spatial shape reach zero error
         MIN_SPATIAL_DIM = 16
         
         # spconv expects spatial_shape in (X, Y, Z) order to match coords format [batch, x, y, z]
@@ -182,14 +182,14 @@ class GraspNet(nn.Module):
             cur_seed_xyz = seed_xyz[i][cur_mask]  # Ns*3
             Ns = cur_seed_xyz.shape[0]
           
-            #perform FPS to get fixed number of points
             cur_seed_xyz = cur_seed_xyz.unsqueeze(0) # 1*Ns*3
             
             # Handle case where we have fewer graspable points than M_points
             num_to_sample = min(Ns, self.M_points)
             
             if num_to_sample > 0:
-                fps_idxs = furthest_point_sample(cur_seed_xyz, num_to_sample)
+                fps_idxs = furthest_point_sample(cur_seed_xyz, num_to_sample) # TODO: test this replacement
+                #fps_idxs = random_points_sample(cur_seed_xyz, num_to_sample)
                 cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # 1*3*Ns
                 cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # num_to_sample*3
                 cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns

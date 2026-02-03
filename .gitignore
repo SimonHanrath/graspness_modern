@@ -7,4 +7,6 @@ __pycache__/
 *.pyc
 *.pth
 /old_stuff
-*slurm
+*.slurm
+.vscode/
+test_stable_score_cog.py

@@ -227,6 +227,10 @@ def create_dataloaders():
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
         val_sampler = DistributedSampler(val_dataset, shuffle=False)
         log_string(f'Using DistributedSampler with {WORLD_SIZE} processes')
+    elif cfgs.single_sample:
+        # For single-sample overfitting, don't use SceneAwareSampler (Subset doesn't have scenename)
+        train_sampler = None  # Will use default sequential sampling
+        log_string('Single-sample mode: using default sampler')
     else:
         # Use scene-aware sampling for cache-friendly data loading
         train_sampler = SceneAwareSampler(train_dataset, shuffle=True)
@@ -471,58 +475,6 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     return epoch_stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in epoch_stat_dict else 0
 
 
-def validate_one_epoch(net, device, val_dataloader, val_writer):
-    """Run validation and return average loss and statistics"""
-    stat_dict = {}  # collect statistics
-    net.eval()
-    
-    # Only show progress bar on main process to avoid duplicates
-    data_iter = tqdm(enumerate(val_dataloader), desc='Validating',
-                     disable=not is_main_process(), total=len(val_dataloader))
-    
-    with torch.inference_mode():
-        for batch_idx, batch_data_label in data_iter:
-            # Transfer to GPU with non_blocking=True for async copy (works with pin_memory=True)
-            for key in batch_data_label:
-                if 'list' in key:
-                    for i in range(len(batch_data_label[key])):
-                        for j in range(len(batch_data_label[key][i])):
-                            batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device, non_blocking=True)
-                else:
-                    batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
-
-            # Use autocast for validation as well
-            with autocast(enabled=cfgs.use_amp):
-                end_points = net(batch_data_label)
-                loss, end_points = get_loss(end_points,
-                                            enable_stable_score=cfgs.enable_stable_score,
-                                            lambda_stable=cfgs.lambda_stable)
-
-            for key in end_points:
-                if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
-                    if key not in stat_dict:
-                        stat_dict[key] = 0
-                    stat_dict[key] += end_points[key].item()
-    
-    # Calculate averages and log to TensorBoard (only main process)
-    num_batches = len(val_dataloader)
-    log_string('---- Validation Results ----')
-    for key in sorted(stat_dict.keys()):
-        avg_value = stat_dict[key] / num_batches
-        # Log with 'epoch_' prefix to match training metrics for comparison
-        if is_main_process() and val_writer is not None:
-            val_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
-        log_string('mean %s: %f' % (key, avg_value))
-    
-    # Flush to ensure data is written to disk
-    if is_main_process() and val_writer is not None:
-        val_writer.flush()
-    
-    avg_loss = stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in stat_dict else 0
-    net.train()
-    return avg_loss
-
-
 def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dataloader, 
           train_writer, val_writer, train_sampler=None, val_sampler=None):
     global EPOCH_CNT
@@ -553,36 +505,6 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dat
         np.random.seed()
         train_loss = train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writer)
         
-        """# Run validation TODO: currently disabled for faster testing
-        log_string('\n---- Running Validation ----')
-        val_loss = validate_one_epoch(net, device, val_dataloader, val_writer)
-        log_string('Validation Loss: %.4f' % val_loss)
-        log_string('Training Loss: %.4f' % train_loss)
-        
-        # Log train vs val comparison to both writers
-        train_writer.add_scalars('epoch_loss_comparison', {
-            'train': train_loss,
-            'val': val_loss
-        }, epoch)
-        val_writer.add_scalars('epoch_loss_comparison', {
-            'train': train_loss,
-            'val': val_loss
-        }, epoch)
-        
-        # Save best model based on validation loss
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_save_path = os.path.join(cfgs.log_dir, cfgs.model_name + '_best.tar')
-            # Get the underlying model if wrapped in DDP
-            model_to_save = net.module if is_distributed() else net
-            save_dict = {'epoch': epoch + 1, 
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'model_state_dict': model_to_save.state_dict(),
-                        'val_loss': val_loss,
-                        'train_loss': train_loss}
-            torch.save(save_dict, best_save_path)
-            log_string('**** Saved best model with val_loss: %.4f (train_loss: %.4f) ****' % (val_loss, train_loss))
-    """
         # Save regular checkpoint (only from main process)
         if is_main_process():
             # Get the underlying model if wrapped in DDP
