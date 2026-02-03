@@ -5,12 +5,12 @@
 import torch
 import numpy as np
 
-GRASP_MAX_WIDTH = 0.10  # 10cm - typical parallel gripper maximum width (was 0.01 which filtered out 99% of grasps!)
+GRASP_MAX_WIDTH = 0.10  
 GRASPNESS_THRESHOLD = 0.01 # instead of 0.1
-NUM_VIEW = 300  # TODO: reduced from 300 to fit on GPU
-NUM_ANGLE = 12  # TODO: reduced from 12to fit on GPU
+NUM_VIEW = 300  
+NUM_ANGLE = 12  
 NUM_DEPTH = 4
-M_POINT = 1024 # TODO: reduced from 1024 to fit on GPU
+M_POINT = 1024
 
 
 def transform_point_cloud(cloud, transform, format='4x4'):

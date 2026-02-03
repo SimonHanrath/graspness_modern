@@ -51,23 +51,20 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
     Q = query_pos.shape[0]
     
     if batch is None:
-        # Single batch
         k_actual = min(k, N)
         
-        # Fast path for k=1: argmin is faster than topk (this is a common case in our pipeline)
+        # Fast path for k=1: argmin is faster than topk (common case in the pipeline)
         if k_actual == 1:
             dist = torch.cdist(query_pos.float(), pos.float())  # (Q, N)
             idx = dist.argmin(dim=-1, keepdim=True)  # (Q, 1)
             return idx
         
-        # General case: use knn_points_torch with (B, N, D) format
         p1 = query_pos.unsqueeze(0)  # (1, Q, 3)
         p2 = pos.unsqueeze(0)        # (1, N, 3)
         
         _, idx = knn_points_torch(p1, p2, K=k_actual)  # (1, Q, k_actual)
         idx = idx.squeeze(0)  # (Q, k_actual)
         
-        # Pad if k > N
         if k > N:
             pad = idx[:, :1].expand(-1, k - N)
             idx = torch.cat([idx, pad], dim=1)
@@ -81,13 +78,11 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
         idx = torch.zeros(Q, k, dtype=torch.long, device=device)
         
         for b in unique_batches:
-            # Get reference points for this batch
             ref_mask = (batch == b)
             pos_b = pos[ref_mask]
             ref_indices = torch.where(ref_mask)[0]
             n_b = pos_b.shape[0]
             
-            # Get query points for this batch
             query_mask = (query_batch == b) if query_batch is not None else ref_mask
             query_pos_b = query_pos[query_mask]
             query_indices = torch.where(query_mask)[0]
@@ -98,12 +93,11 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
                 
             k_b = min(k, n_b)
             
-            # Fast path for k=1: argmin is faster than topk
+            # Fast path for k=1
             if k_b == 1:
                 dist_b = torch.cdist(query_pos_b.float(), pos_b.float())  # (q_b, n_b)
                 local_idx = dist_b.argmin(dim=-1, keepdim=True)  # (q_b, 1)
             else:
-                # Use knn_points_torch with (1, q_b, 3) and (1, n_b, 3)
                 p1_b = query_pos_b.unsqueeze(0)  # (1, q_b, 3)
                 p2_b = pos_b.unsqueeze(0)        # (1, n_b, 3)
                 
@@ -113,7 +107,6 @@ def knn_query(pos: torch.Tensor, k: int, batch: torch.Tensor = None,
             # Map local indices to global indices
             global_idx = ref_indices[local_idx]
             
-            # Pad if k_b < k
             if k_b < k:
                 pad_idx = global_idx[:, :1].expand(-1, k - k_b)
                 global_idx = torch.cat([global_idx, pad_idx], dim=1)

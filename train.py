@@ -47,8 +47,6 @@ parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [def
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
-parser.add_argument('--val_split', type=str, default='val', choices=['val', 'test_seen'], 
-                    help='Validation split: "val" uses scenes 7-8 (has labels), "test_seen" uses scene 10 (needs label generation) [default: val]')
 parser.add_argument('--use_amp', action='store_true', default=False,
                     help='Use torch.cuda.amp for mixed-precision training')
 parser.add_argument('--single_sample', action='store_true', default=False,
@@ -82,6 +80,10 @@ parser.add_argument('--local_rank', type=int, default=-1,
 
 
 cfgs = parser.parse_args()
+
+# Set backbone_lr_scale default once (0.1 for pretrained, 1.0 otherwise)
+if cfgs.backbone_lr_scale is None:
+    cfgs.backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
 
 # =============================================
 # Distributed Training Setup
@@ -142,7 +144,7 @@ LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE = setup_distributed()
 
 
 EPOCH_CNT = 0
-CHECKPOINT_PATH = cfgs.checkpoint_path if cfgs.checkpoint_path is not None and cfgs.resume else None
+CHECKPOINT_PATH = cfgs.checkpoint_path if cfgs.resume else None
 if not os.path.exists(cfgs.log_dir) and is_main_process():
     os.makedirs(cfgs.log_dir)
 
@@ -163,20 +165,10 @@ def log_string(out_str):
         print(out_str)
 
 
-# For non-main processes, still allow printing but not logging
-def log_string_all(out_str):
-    """Log from all processes (for debugging distributed issues)."""
-    prefix = f'[Rank {get_rank()}] ' if is_distributed() else ''
-    print(prefix + out_str)
-    if is_main_process() and LOG_FOUT:
-        LOG_FOUT.write(out_str + '\n')
-        LOG_FOUT.flush()
-
 
 # Init datasets and dataloaders 
 def my_worker_init_fn(worker_id):
     np.random.seed(np.random.get_state()[1][0] + worker_id)
-    pass
 
 
 def create_dataloaders():
@@ -189,11 +181,6 @@ def create_dataloaders():
         log_string("Loading all grasp labels into memory (~21GB)")
         grasp_labels = load_grasp_labels(cfgs.dataset_root)
 
-    # Auto-enable RGB for transformer_pretrained backbone (requires 6-channel input)
-    use_rgb = (cfgs.backbone == 'transformer_pretrained')
-    if use_rgb:
-        log_string("Using RGB features for 6-channel input (XYZ + RGB) - required for transformer_pretrained")
-    
     # Stable score settings (labels auto-computed by dataset if missing)
     if cfgs.enable_stable_score:
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
@@ -204,12 +191,6 @@ def create_dataloaders():
                                     enable_stable_score=cfgs.enable_stable_score)
     log_string('train dataset length: ' + str(len(train_dataset)))
 
-    # Validation dataset (use specified validation split without augmentation)
-    val_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.val_split,
-                                  num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
-                                  remove_outlier=True, augment=False, load_label=True, use_rgb=use_rgb,
-                                  enable_stable_score=cfgs.enable_stable_score)
-    log_string('validation dataset length: ' + str(len(val_dataset)))
 
     # For overfitting test, use only 1 sample repeated 256 times
     if cfgs.single_sample:
@@ -222,10 +203,8 @@ def create_dataloaders():
     # SceneAwareSampler groups samples by scene to maximize collision label cache hits
     # This is much faster than random shuffle with lazy loading
     train_sampler = None
-    val_sampler = None
     if is_distributed():
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
-        val_sampler = DistributedSampler(val_dataset, shuffle=False)
         log_string(f'Using DistributedSampler with {WORLD_SIZE} processes')
     elif cfgs.single_sample:
         # For single-sample overfitting, don't use SceneAwareSampler (Subset doesn't have scenename)
@@ -243,15 +222,8 @@ def create_dataloaders():
                                   persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
                                   worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
     log_string('train dataloader length: ' + str(len(train_dataloader)))
-
-    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False,
-                                sampler=val_sampler,
-                                num_workers=cfgs.num_workers, pin_memory=True,
-                                persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
-                                worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
-    log_string('validation dataloader length: ' + str(len(val_dataloader)))
     
-    return train_dataloader, val_dataloader, train_sampler, val_sampler
+    return train_dataloader, train_sampler
 
 
 def create_model_and_optimizer():
@@ -277,12 +249,7 @@ def create_model_and_optimizer():
     if cfgs.enable_stable_score:
         log_string(f"Stable score prediction enabled (lambda_stable={cfgs.lambda_stable})")
 
-    # Determine backbone LR scale (default: 0.1 for pretrained, 1.0 otherwise)
-    backbone_lr_scale = cfgs.backbone_lr_scale
-    if backbone_lr_scale is None:
-        backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
-    
-    backbone_lr = cfgs.learning_rate * backbone_lr_scale
+    backbone_lr = cfgs.learning_rate * cfgs.backbone_lr_scale
     head_lr = cfgs.learning_rate
     
     # Separate backbone params from head params for discriminative learning rates
@@ -376,13 +343,8 @@ def get_current_lr(epoch, base_lr):
 
 def adjust_learning_rate(optimizer, epoch):
     """Adjust LR for all param groups, maintaining their relative ratios."""
-    # Determine backbone LR scale
-    backbone_lr_scale = cfgs.backbone_lr_scale
-    if backbone_lr_scale is None:
-        backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
-    
     head_lr = get_current_lr(epoch, cfgs.learning_rate)
-    backbone_lr = get_current_lr(epoch, cfgs.learning_rate * backbone_lr_scale)
+    backbone_lr = get_current_lr(epoch, cfgs.learning_rate * cfgs.backbone_lr_scale)
     
     for param_group in optimizer.param_groups:
         group_name = param_group.get('name', '')
@@ -475,30 +437,27 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     return epoch_stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in epoch_stat_dict else 0
 
 
-def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dataloader, 
-          train_writer, val_writer, train_sampler=None, val_sampler=None):
+def train(start_epoch, net, optimizer, scaler, device, train_dataloader,
+          train_writer, train_sampler=None):
     global EPOCH_CNT
-    best_val_loss = float('inf')
     
     for epoch in range(start_epoch, cfgs.max_epoch):
         # Set epoch on distributed sampler for proper shuffling
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
-        if val_sampler is not None:
-            val_sampler.set_epoch(epoch)
         
         EPOCH_CNT = epoch
         log_string('**** EPOCH %03d ****' % epoch)
         log_string('Current learning rate: head=%.6f, backbone=%.6f' % (
             get_current_lr(epoch, cfgs.learning_rate),
-            get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0)))
+            get_current_lr(epoch, cfgs.learning_rate * cfgs.backbone_lr_scale)
         ))
         log_string(str(datetime.now()))
         
         # Log learning rate to TensorBoard (only main process)
         if is_main_process():
             train_writer.add_scalar('learning_rate/head', get_current_lr(epoch, cfgs.learning_rate), epoch)
-            train_writer.add_scalar('learning_rate/backbone', get_current_lr(epoch, cfgs.learning_rate * (cfgs.backbone_lr_scale if cfgs.backbone_lr_scale else (0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0))), epoch)
+            train_writer.add_scalar('learning_rate/backbone', get_current_lr(epoch, cfgs.learning_rate * cfgs.backbone_lr_scale), epoch)
         
         # Reset numpy seed.
         # REF: https://github.com/pytorch/pytorch/issues/5059
@@ -517,7 +476,7 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader, val_dat
 
 if __name__ == '__main__':
     # Create dataloaders (each process creates its own for DDP)
-    TRAIN_DATALOADER, VAL_DATALOADER, TRAIN_SAMPLER, VAL_SAMPLER = create_dataloaders()
+    TRAIN_DATALOADER, TRAIN_SAMPLER= create_dataloaders()
     
     # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
@@ -525,20 +484,20 @@ if __name__ == '__main__':
     # TensorBoard Visualizers (only main process writes to TensorBoard)
     if is_main_process():
         TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
-        VAL_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'val'))
+        
     else:
         # Create dummy writers for non-main processes (won't be used but simplifies code)
         TRAIN_WRITER = None
-        VAL_WRITER = None
+        
     
     # Start training
     try:
-        train(start_epoch, net, optimizer, scaler, device, TRAIN_DATALOADER, VAL_DATALOADER, 
-              TRAIN_WRITER, VAL_WRITER, TRAIN_SAMPLER, VAL_SAMPLER)
+        train(start_epoch, net, optimizer, scaler, device, TRAIN_DATALOADER,
+              TRAIN_WRITER, TRAIN_SAMPLER)
     finally:
         # Ensure TensorBoard writers are properly closed
         if is_main_process():
             TRAIN_WRITER.close()
-            VAL_WRITER.close()
+           
         # Clean up distributed training
         cleanup_distributed()

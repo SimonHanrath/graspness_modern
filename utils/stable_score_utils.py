@@ -11,7 +11,7 @@ import os
 import numpy as np
 from tqdm import tqdm
 
-# Try importing mesh libraries
+# Try importing mesh libraries (currently used: trimesh)
 try:
     import trimesh
     HAS_TRIMESH = True
@@ -130,24 +130,20 @@ def compute_stable_score_for_object(grasp_label_path, mesh_path, num_views=300, 
     V = num_views
     A = num_angles
     
-    # Compute object COG
     cog = compute_mesh_cog(mesh_path)
     
-    # Generate template views
     views = generate_grasp_views(num_views)  # (V, 3)
     
-    # Initialize stable scores
     stable = np.zeros((Np, V, A), dtype=np.float32)
     
     # For each grasp point
     for p_idx in range(Np):
-        grasp_point = grasp_points[p_idx]  # (3,) - translation of gripper
+        grasp_point = grasp_points[p_idx]
         
         # For each view
         for v_idx in range(V):
             view = views[v_idx]
             
-            # Get gripper plane normal (approach direction)
             plane_normal = compute_grasp_plane_normal(view)
             
             # Compute perpendicular distance from COG to gripper plane

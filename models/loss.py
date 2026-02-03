@@ -10,7 +10,6 @@ def get_loss(end_points, enable_stable_score=False, lambda_stable=1.0):
     width_loss, end_points = compute_width_loss(end_points)
     loss = objectness_loss + 10 * graspness_loss + 100 * view_loss + 15 * score_loss + 10 * width_loss
     
-    # Add stable score loss if enabled
     if enable_stable_score and 'grasp_stable_pred' in end_points:
         stable_loss, end_points = compute_stable_loss(end_points)
         loss = loss + lambda_stable * stable_loss
@@ -30,14 +29,12 @@ def compute_objectness_loss(end_points):
     acc = (objectness_pred == objectness_label.long()).float()
     end_points['stage1_objectness_acc'] = acc.mean()
     
-    # Precision: of predicted positives, how many are correct
     pred_pos = (objectness_pred == 1)
     if pred_pos.sum() > 0:
         end_points['stage1_objectness_prec'] = acc[pred_pos].mean()
     else:
         end_points['stage1_objectness_prec'] = torch.tensor(0.0, device=acc.device, dtype=acc.dtype)
     
-    # Recall: of actual positives, how many did we predict correctly
     label_pos = (objectness_label == 1)
     if label_pos.sum() > 0:
         end_points['stage1_objectness_recall'] = acc[label_pos].mean()
@@ -132,13 +129,11 @@ def compute_stable_loss(end_points):
     stable_pred = end_points['grasp_stable_pred']  # (B, M, A)
     stable_label = end_points['batch_grasp_stable']  # (B, M, A)
     
-    # Get grasp score label for masking - stable is shared across depths,
-    # so we check if any depth has a valid grasp for each (B, M, A) position
     grasp_score_label = end_points['batch_grasp_score']  # (B, M, A, D)
-    # A grasp is valid if any depth has score > 0
-    loss_mask = (grasp_score_label > 0).any(dim=-1)  # (B, M, A)
+
+    loss_mask = (grasp_score_label > 0).any(dim=-1)
     
-    loss = criterion(stable_pred, stable_label)  # (B, M, A)
+    loss = criterion(stable_pred, stable_label)
     
     if loss_mask.sum() > 0:
         loss = loss[loss_mask].mean()

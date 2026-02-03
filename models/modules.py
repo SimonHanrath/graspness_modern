@@ -30,13 +30,13 @@ class ApproachNet(nn.Module):  # Probabilistic view selection
         super().__init__()
         self.num_view = num_view
         self.in_dim = seed_feature_dim
-        self.is_training = is_training  # keep for now to avoid breaking other code
+        self.is_training = is_training
 
         self.conv1 = nn.Conv1d(self.in_dim, self.in_dim, 1)
         self.conv2 = nn.Conv1d(self.in_dim, self.num_view, 1)
 
         # Precompute template views once and store as buffer (moves with .to(device))
-        template_views = generate_grasp_views(self.num_view)  # should return a torch.Tensor
+        template_views = generate_grasp_views(self.num_view) 
         self.register_buffer("template_views", template_views.float())
 
     def forward(self, seed_features, end_points):
@@ -47,13 +47,11 @@ class ApproachNet(nn.Module):  # Probabilistic view selection
         end_points['view_score'] = view_score
 
         if self.is_training:
-            # normalize view graspness score to 0~1 (per seed)
             view_score_ = view_score.detach()
             view_score_max, _ = view_score_.max(dim=2, keepdim=True)  # (B, num_seed, 1)
             view_score_min, _ = view_score_.min(dim=2, keepdim=True)  # (B, num_seed, 1)
             view_score_ = (view_score_ - view_score_min) / (view_score_max - view_score_min + 1e-8)
 
-            # view_score_ : (B, num_seed, num_view)
             probs_flat = view_score_.view(-1, self.num_view)
             top_view_inds_flat = torch.multinomial(probs_flat, 1, replacement=False)  # (B * num_seed, 1)
             top_view_inds = top_view_inds_flat.view(B, num_seed)  # (B, num_seed)
@@ -109,8 +107,7 @@ class SWADNet(nn.Module): # Grasp pose predicition head
         self.conv1 = nn.Conv1d(256, 256, 1)  # input feat dim need to be consistent with CloudCrop module
         self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth, 1)
         
-        # Stable score head: predicts stability per rotation (shared across depths)
-        # Output shape: [B, num_angle, M] -> after permute: [B, M, num_angle]
+        # Stable score head that predicts stability per rotation (shared across depths)
         if self.enable_stable_score:
             self.conv_stable = nn.Sequential(
                 nn.Conv1d(256, 128, 1),
@@ -129,7 +126,6 @@ class SWADNet(nn.Module): # Grasp pose predicition head
         end_points['grasp_score_pred'] = vp_out[:, 0]  # B * num_seed * num angle * num_depth
         end_points['grasp_width_pred'] = vp_out[:, 1]
         
-        # Stable score prediction (if enabled)
         if self.enable_stable_score:
             stable_raw = self.conv_stable(vp_features_relu)  # (B, num_angle, num_seed)
             stable_raw = stable_raw.permute(0, 2, 1)  # (B, num_seed, num_angle)

@@ -223,7 +223,6 @@ class SPconvUNetBase(ResNetBase):
         return out
 
 
-
 class SPconvUNet14(SPconvUNetBase):
     BLOCK = BasicBlock
     LAYERS = (1, 1, 1, 1, 1, 1, 1, 1)

@@ -36,7 +36,7 @@ def process_grasp_labels(end_points):
         
         # Get the offset that was applied to the point cloud
         # seed_xyz is in shifted space, but grasp_points are in camera coordinates
-        # We need to apply the same offset to grasp_points for correct matching
+        # so we need to apply the same offset to grasp_points for correct matching
         cloud_offset = end_points['cloud_offset'][i]  # (3,)
 
         # get merged grasp points for label computation
@@ -64,8 +64,7 @@ def process_grasp_labels(end_points):
             grasp_views_rot = batch_viewpoint_params_to_matrix(-grasp_views, angles)  # (V, 3, 3)
             grasp_views_rot_trans = torch.matmul(pose[:3, :3], grasp_views_rot)  # (V, 3, 3)
 
-            # assign views - find nearest template view for each transformed view
-            # grasp_views: (V, 3) template views, grasp_views_trans: (V, 3) transformed views
+            # assign views
             view_inds = knn_query(grasp_views, k=1, query_pos=grasp_views_trans).squeeze(-1)  # (V,)
             grasp_views_rot_trans = torch.index_select(grasp_views_rot_trans, 0, view_inds)  # (V, 3, 3)
             grasp_views_rot_trans = grasp_views_rot_trans.unsqueeze(0).expand(num_grasp_points, -1, -1,
@@ -91,8 +90,7 @@ def process_grasp_labels(end_points):
         if has_stable:
             grasp_stable_merged = torch.cat(grasp_stable_merged, dim=0)  # (Np', V, A)
 
-        # compute nearest neighbors - find nearest grasp point for each seed point
-        # grasp_points_merged: (Np', 3), seed_xyz: (Ns, 3)
+        # compute nearest neighbors
         nn_inds = knn_query(grasp_points_merged, k=1, query_pos=seed_xyz).squeeze(-1)  # (Ns,)
 
         # assign anchor points to real points
@@ -154,7 +152,6 @@ def match_grasp_view_and_label(end_points):
     grasp_scores = end_points['batch_grasp_score']  # (B, Ns, V, A, D)
     grasp_widths = end_points['batch_grasp_width']  # (B, Ns, V, A, D, 3)
     
-    # Check if stable labels are available
     has_stable = 'batch_grasp_stable_full' in end_points
 
     B, Ns, V, A, D = grasp_scores.size()

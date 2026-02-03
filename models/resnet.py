@@ -75,7 +75,6 @@ class ResNetBase(nn.Module):
                     with torch.no_grad():
                         weight.normal_(0, std)
                 else:
-                    # Fallback to standard initialization for unexpected shapes
                     nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 
                 if m.bias is not None:

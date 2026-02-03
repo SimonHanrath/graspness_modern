@@ -1,7 +1,3 @@
-""" GraspNet baseline model definition.
-    Author: chenxi-wang
-"""
-
 import os
 import sys
 import numpy as np
@@ -14,12 +10,11 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
 from models.backbone_resunet14 import SPconvUNet14D
-from models.backbone_pointnet_transformer import PointNetTransformer14D
 from models.pointcept.backbone_pointnet_transformer_pointcept import (
     PointTransformerV3EncoderFullRes,
     create_ptv3_backbone_grasp,
 )
-from models.backbone_pointnet2 import PointNet2Backbone, PointNet2BackboneLight
+from models.backbone_pointnet2 import PointNet2Backbone
 
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
 from utils.loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNESS_THRESHOLD, M_POINT
@@ -33,9 +28,8 @@ class GraspNet(nn.Module):
         cylinder_radius=0.05,
         seed_feat_dim=512,
         is_training=True,
-        backbone='transformer',
+        backbone='resunet',
         ptv3_pretrained_path=None,
-        use_pretrained_ptv3=False,
         enable_flash=False,
         enable_stable_score=False,
     ):
@@ -48,31 +42,22 @@ class GraspNet(nn.Module):
         self.num_view = NUM_VIEW
         self.enable_stable_score = enable_stable_score
         
-        # Auto-enable RGB for transformer_pretrained (requires 6-channel input: XYZ + RGB)
-        self.use_rgb = (backbone == 'transformer_pretrained') or (backbone == 'transformer' and use_pretrained_ptv3)
-
-        # Determine input channels based on backbone
-        in_channels = 3  # Feature channels (RGB or ones)
-
-        # Select backbone architecture
         if backbone == 'resunet':
-            self.backbone = SPconvUNet14D(in_channels=in_channels, out_channels=self.seed_feature_dim, D=3)
+            self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'pointnet2':
-            self.backbone = PointNet2Backbone(in_channels=in_channels, out_channels=self.seed_feature_dim)
-        elif backbone == 'transformer_pretrained' or (backbone == 'transformer' and use_pretrained_ptv3):
-            # Use PTv3 backbone with pretrained Pointcept weights
+            self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
+        elif backbone == 'transformer_pretrained':
             # PTv3 pretrained model expects 6-ch input (XYZ + RGB/normals)
-            # We concatenate coords with features in forward pass
             self.backbone = create_ptv3_backbone_grasp(
                 checkpoint_path=ptv3_pretrained_path,
-                in_channels=6,  # Always 6-ch for pretrained (XYZ+RGB)
+                in_channels=6, 
                 out_channels=self.seed_feature_dim,
                 use_pretrained=True,
                 enable_flash=enable_flash,
             )
         else:  # transformer (default without pretrained)
             self.backbone = PointTransformerV3EncoderFullRes(
-                in_channels=in_channels, 
+                in_channels=3, 
                 out_channels=self.seed_feature_dim,
                 enc_depths=(1, 1, 1, 2, 1),
                 enc_channels=(32, 64, 128, 256, 256),
@@ -91,12 +76,6 @@ class GraspNet(nn.Module):
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth, enable_stable_score=enable_stable_score)
 
-        # Torch-native constants
-        self.register_buffer("angle_step", torch.tensor(np.pi / 12, dtype=torch.float32))
-        self.register_buffer("depth_step", torch.tensor(0.01, dtype=torch.float32))
-        self.register_buffer("grasp_height_const", torch.tensor(0.02, dtype=torch.float32))
-
-
     def forward(self, end_points):
         seed_xyz = end_points['point_clouds']              
         B, point_num, _ = seed_xyz.shape
@@ -105,23 +84,18 @@ class GraspNet(nn.Module):
         feats  = end_points['feats'] # (M, Cin) voxelized features
         quantize2original = end_points['quantize2original']  # (N,) mapping from original points to voxels (N total points, values in [0, M))
 
-        # coords[:, 1:] are [x, y, z] coordinates
-        # Note: coordinates are already normalized per-sample in the dataset (shifted to start from 0)
-        # but we need to normalize batch-level for proper spatial shape calculation
+         # We need to normalize batch-level for proper spatial shape calculation, since spconv expects all cords to be non-negative
         mins = coords[:, 1:].amin(dim=0)          # (3,) [min_x, min_y, min_z]
         maxs = coords[:, 1:].amax(dim=0)          # (3,) [max_x, max_y, max_z]
 
-        # Normalize coordinates to start from 0 at batch level
-        # (this handles edge cases where min might not be exactly 0 due to batching)
         coords[:, 1:] = coords[:, 1:] - mins.unsqueeze(0)
         
-        extent = (maxs - mins + 1)                # (3,) in [X, Y, Z]
+        extent = (maxs - mins + 1)
         
         # Ensure minimum spatial shape to handle 4 stride 2 layers (downsample by 16)
-        # Without this, flat point clouds (e.g. Z=1) would cause spatial shape reach zero error
+        # TODO: Without this, flat point clouds (e.g. Z=1) would cause spatial shape reach zero error
         MIN_SPATIAL_DIM = 16
         
-        # spconv expects spatial_shape in (X, Y, Z) order to match coords format [batch, x, y, z]
         spatial_shape_xyz = (
             max(int(extent[0].item()), MIN_SPATIAL_DIM),  
             max(int(extent[1].item()), MIN_SPATIAL_DIM),  
@@ -130,31 +104,31 @@ class GraspNet(nn.Module):
 
         coords_bxyz = coords.contiguous().to(torch.int32)
 
-        # For PTv3 with use_rgb=True, we need 6-channel input (normalized XYZ coords + RGB features)
+        
         # The pretrained PTv3 model expects: [x, y, z, r, g, b] where all are normalized
-        if self.use_rgb and feats.shape[1] == 3:  # RGB features available
-            # Normalize coordinates to [0, 1] range for each axis
-            coord_float = coords[:, 1:].float()  # (M, 3) [x, y, z]
+        if (self.backbone == 'transformer_pretrained') and (feats.shape[1] == 3):
+            
+            coord_float = coords[:, 1:].float()  # (M, 3)
             coord_min = coord_float.min(dim=0, keepdim=True).values
             coord_max = coord_float.max(dim=0, keepdim=True).values
-            coord_normalized = (coord_float - coord_min) / (coord_max - coord_min + 1e-6)  # (M, 3) in [0, 1]
-            # Concatenate normalized coords with RGB features (already normalized in dataset)
+            coord_normalized = (coord_float - coord_min) / (coord_max - coord_min + 1e-6)
+
             feats_6ch = torch.cat([coord_normalized, feats], dim=1)  # (M, 6)
         else:
-            feats_6ch = feats  # Use original features (3-ch)
+            feats_6ch = feats 
+
 
         sparse_input = spconv.SparseConvTensor(
-            feats_6ch,             # (M, Cin) - 6 channels for PTv3 with RGB, 3 otherwise
-            coords_bxyz,           # (M, 4) [batch, x, y, z], int32
-            spatial_shape_xyz,     # (X, Y, Z)
+            feats_6ch,             
+            coords_bxyz,           
+            spatial_shape_xyz,
             B                      
         )
         
-        # spconv UNet will preserve voxel structure (same coordinates, different features)
         sparse_output = self.backbone(sparse_input)
-        voxel_features = sparse_output.features  # (M, C) - same M voxels as input
+        voxel_features = sparse_output.features  # (M, C)
         
-        # Map voxel features back to original dense point cloud using quantize2original
+        # Map voxel features back to original dense point cloud
         # This is to mimic the approach from MinkowskiEngine
         seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
 
@@ -173,7 +147,7 @@ class GraspNet(nn.Module):
         graspable_num_batch = 0.
 
 
-        for i in range(B):#  TODO: think about why we need to iterate over the batches and not parallelize this
+        for i in range(B):
 
             # Filter out unlikely graspable points
             cur_mask = graspable_mask[i]
@@ -188,24 +162,22 @@ class GraspNet(nn.Module):
             num_to_sample = min(Ns, self.M_points)
             
             if num_to_sample > 0:
-                fps_idxs = furthest_point_sample(cur_seed_xyz, num_to_sample) # TODO: test this replacement
+                fps_idxs = furthest_point_sample(cur_seed_xyz, num_to_sample) # TODO: test the replacement below
                 #fps_idxs = random_points_sample(cur_seed_xyz, num_to_sample)
                 cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # 1*3*Ns
                 cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # num_to_sample*3
                 cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns
                 cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # feat_dim*num_to_sample
             else:
-                # No graspable points: use zeros with correct feature dimension
+                # use zeros with correct feature dimension
                 cur_seed_xyz = torch.zeros((0, 3), device=seed_xyz.device, dtype=seed_xyz.dtype)
                 cur_feat = torch.zeros((self.seed_feature_dim, 0), device=seed_features.device, dtype=seed_features.dtype)
             
             # Pad to M_points if necessary
             if num_to_sample < self.M_points:
                 pad_num = self.M_points - num_to_sample
-                # Pad xyz with zeros 
                 xyz_pad = torch.zeros((pad_num, 3), device=seed_xyz.device, dtype=seed_xyz.dtype)
                 cur_seed_xyz = torch.cat([cur_seed_xyz, xyz_pad], dim=0)
-                # Pad features with zeros (use self.seed_feature_dim to handle empty cur_feat case)
                 feat_dim = cur_feat.shape[0] if cur_feat.shape[0] > 0 else self.seed_feature_dim
                 feat_pad = torch.zeros((feat_dim, pad_num), device=seed_features.device, dtype=seed_features.dtype)
                 cur_feat = torch.cat([cur_feat, feat_pad], dim=1)
@@ -254,23 +226,22 @@ def pred_decode(end_points, use_stable_score=False):
     for i in range(batch_size):
         grasp_center = end_points['xyz_graspable'][i].float()
 
-        grasp_score = end_points['grasp_score_pred'][i].float()  # (M, A, D)
+        grasp_score = end_points['grasp_score_pred'][i].float()
         grasp_score = grasp_score.view(M_POINT, NUM_ANGLE*NUM_DEPTH)
         
-        # Get stable score for reweighting if available
         if has_stable:
-            stable_score = end_points['grasp_stable_pred'][i].float()  # (M, A)
-            # Expand stable score to match angle*depth shape (stable is shared across depths)
-            stable_expanded = stable_score.unsqueeze(-1).expand(-1, -1, NUM_DEPTH)  # (M, A, D)
+            stable_score = end_points['grasp_stable_pred'][i].float()
+            # Expand stable score to match angle*depth shape 
+            stable_expanded = stable_score.unsqueeze(-1).expand(-1, -1, NUM_DEPTH) 
             stable_expanded = stable_expanded.reshape(M_POINT, NUM_ANGLE*NUM_DEPTH)
-            # Reweight: score_new = score_old * (1 - stable_score)
+            # Reweight
             grasp_score_reweighted = grasp_score * (1.0 - stable_expanded)
             # Find best grasp using reweighted scores
-            _, grasp_score_inds = torch.max(grasp_score_reweighted, -1)  # [M_POINT]
+            _, grasp_score_inds = torch.max(grasp_score_reweighted, -1)  
             # Get the original score for the selected grasp (for output compatibility)
             grasp_score_final = torch.gather(grasp_score, 1, grasp_score_inds.view(-1, 1))
         else:
-            grasp_score_final, grasp_score_inds = torch.max(grasp_score, -1)  # [M_POINT]
+            grasp_score_final, grasp_score_inds = torch.max(grasp_score, -1)
             grasp_score_final = grasp_score_final.view(-1, 1)
         
         grasp_angle = (grasp_score_inds // NUM_DEPTH).float() * (torch.pi / 12)

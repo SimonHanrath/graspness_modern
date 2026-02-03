@@ -5,10 +5,8 @@
 
 ''' Pointnet2 layers.
 Modified based on: https://github.com/erikwijmans/Pointnet2_PyTorch
-Extended with the following:
-1. Uniform sampling in each local region (sample_uniformly)
-2. Return sampled points indices to support votenet.
 '''
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

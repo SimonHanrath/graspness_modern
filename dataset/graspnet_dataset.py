@@ -122,8 +122,8 @@ class GraspNetDataset(Dataset):
         self.camera = camera
         self.augment = augment
         self.load_label = load_label
-        self.use_rgb = use_rgb  # Whether to include RGB features (for 6-channel input)
-        self.enable_stable_score = enable_stable_score  # Whether to load stable score labels
+        self.use_rgb = use_rgb  
+        self.enable_stable_score = enable_stable_score 
         
         # Cache for stable score labels per object
         self._stable_labels_cache = {}
@@ -140,11 +140,11 @@ class GraspNetDataset(Dataset):
                         "Failed to compute stable labels. Please install trimesh: pip install trimesh"
                     )
         
-        # Cache for collision labels - use LRU cache with max size to limit memory
-        # This allows recently accessed scenes to stay in memory while releasing old ones
-        # Size of 10 scenes balances memory (~1.8GB) with hit rate for batched scene access
+        # use LRU cache 
+        # this allows recently accessed scenes to stay in memory while releasing old ones
+        # Size of 10 scenes balances memory ( ca. 1.8GB) with hit rate for batched scene access
         self._collision_cache = {}
-        self._collision_cache_maxsize = 10  # Keep at most 10 scenes in cache
+        self._collision_cache_maxsize = 10 
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
@@ -176,9 +176,7 @@ class GraspNetDataset(Dataset):
                 self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
-            # REMOVED: No longer loading all collision labels at initialization
-            # This prevents each DataLoader worker from holding 3GB+ of collision data in memory
-
+            
     def scene_list(self):
         return self.scenename
     
@@ -191,7 +189,6 @@ class GraspNetDataset(Dataset):
         if scene in self._collision_cache:
             return self._collision_cache[scene]
         
-        # Load collision labels for this scene
         collision_labels_path = os.path.join(self.root, 'collision_label', scene, 'collision_labels.npz')
         collision_labels_npz = np.load(collision_labels_path)
         
@@ -200,13 +197,10 @@ class GraspNetDataset(Dataset):
         for i in range(len(collision_labels_npz)):
             collision_dict[i] = collision_labels_npz['arr_{}'.format(i)]
         
-        # Implement simple LRU: if cache is full, remove oldest entry
         if len(self._collision_cache) >= self._collision_cache_maxsize:
-            # Remove the first (oldest) item
             oldest_scene = next(iter(self._collision_cache))
             del self._collision_cache[oldest_scene]
         
-        # Add to cache
         self._collision_cache[scene] = collision_dict
         return collision_dict
     
@@ -227,17 +221,16 @@ class GraspNetDataset(Dataset):
         if obj_idx in self._stable_labels_cache:
             return self._stable_labels_cache[obj_idx]
         
-        # Load stable labels for this object
         stable_file = os.path.join(self._stable_labels_path, '{}_stable.npz'.format(str(obj_idx - 1).zfill(3)))
+        
         if not os.path.exists(stable_file):
-            # Stable labels not precomputed for this object
             return None
         
         stable_npz = np.load(stable_file)
         stable_labels = stable_npz['stable'].astype(np.float32)  # (Np, V, A)
         
         # Cache with simple size limit
-        if len(self._stable_labels_cache) >= 20:  # Keep max 20 objects
+        if len(self._stable_labels_cache) >= 20:
             oldest = next(iter(self._stable_labels_cache))
             del self._stable_labels_cache[oldest]
         
@@ -330,9 +323,7 @@ class GraspNetDataset(Dataset):
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset
 
-        # Features: either ones (3-ch) or normalized RGB (3-ch for 6-ch input: XYZ coords + RGB feats)
         if self.use_rgb:
-            # Normalize RGB to [0, 1] range
             feats = rgb_sampled.astype(np.float32) / 255.0
         else:
             feats = np.ones_like(cloud_sampled).astype(np.float32)
@@ -348,12 +339,11 @@ class GraspNetDataset(Dataset):
         depth = np.array(Image.open(self.depthpath[index]))
         seg = np.array(Image.open(self.labelpath[index]))
         meta = scio.loadmat(self.metapath[index])
-        graspness = np.load(self.graspnesspath[index])  # for each point in workspace masked point cloud
+        graspness = np.load(self.graspnesspath[index]) 
         scene = self.scenename[index]
         
-        # Load RGB if needed
         if self.use_rgb:
-            rgb = np.array(Image.open(self.rgbpath[index]))  # (H, W, 3) uint8
+            rgb = np.array(Image.open(self.rgbpath[index]))
         
         try:
             obj_idxs = meta['cls_indexes'].flatten().astype(np.int32)
@@ -382,7 +372,6 @@ class GraspNetDataset(Dataset):
         cloud_masked = cloud[mask]
         seg_masked = seg[mask]
         
-        # Apply same mask to RGB
         if self.use_rgb:
             rgb_masked = rgb[mask]  # (N, 3) uint8
 
@@ -428,13 +417,11 @@ class GraspNetDataset(Dataset):
             scores[collision] = 0
             grasp_scores_list.append(scores)
             
-            # Load stable labels if enabled
             if self.enable_stable_score:
                 stable_labels = self._load_stable_labels(obj_idx)
                 if stable_labels is not None:
                     grasp_stable_list.append(stable_labels[idxs])  # (Np_sampled, V, A)
                 else:
-                    # If stable labels not available, use zeros (no penalty)
                     grasp_stable_list.append(np.zeros((len(idxs), scores.shape[1], scores.shape[2]), dtype=np.float32))
 
         if self.augment:
@@ -444,9 +431,7 @@ class GraspNetDataset(Dataset):
         offset = -cloud_sampled.min(axis=0)  # [3,]
         cloud_sampled = cloud_sampled + offset
 
-        # Features: either ones (3-ch) or normalized RGB (3-ch for 6-ch input: XYZ coords + RGB feats)
         if self.use_rgb:
-            # Normalize RGB to [0, 1] range
             feats = rgb_sampled.astype(np.float32) / 255.0
         else:
             feats = np.ones_like(cloud_sampled).astype(np.float32)
@@ -454,7 +439,7 @@ class GraspNetDataset(Dataset):
         ret_dict = {'point_clouds': cloud_sampled.astype(np.float32),
                     'coors': cloud_sampled.astype(np.float32) / self.voxel_size,
                     'feats': feats,
-                    'cloud_offset': offset.astype(np.float32),  # Store offset to transform back to camera coords
+                    'cloud_offset': offset.astype(np.float32),
                     'graspness_label': graspness_sampled.astype(np.float32),
                     'objectness_label': objectness_label.astype(np.int64),
                     'object_poses_list': object_poses_list,
@@ -462,7 +447,7 @@ class GraspNetDataset(Dataset):
                     'grasp_widths_list': grasp_widths_list,
                     'grasp_scores_list': grasp_scores_list}
         
-        # Add stable labels if enabled
+
         if self.enable_stable_score and len(grasp_stable_list) > 0:
             ret_dict['grasp_stable_list'] = grasp_stable_list
         
@@ -491,7 +476,6 @@ def load_grasp_labels_lazy(root):
     """
     Alternative lazy loading for grasp labels.
     Returns a lazy loader object instead of loading all labels upfront.
-    Use this if memory is extremely constrained.
     """
     return LazyGraspLabels(root)
 
@@ -506,7 +490,7 @@ def spconv_collate_fn(list_data):
     3. Create quantize2original mapping (like ME.utils.sparse_quantize)
     4. Average features for points that map to the same voxel
     
-    This ensures that:
+    To ensure that:
     - Multiple points in the same voxel get averaged features (proper voxelization)
     - We can map voxel features back to original points using quantize2original
     """

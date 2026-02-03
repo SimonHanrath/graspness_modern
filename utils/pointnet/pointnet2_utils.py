@@ -31,7 +31,7 @@ class RandomDropout(nn.Module):
         return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
 
 
-def furthest_point_sample(xyz, npoint) -> torch.Tensor: # We could replace this with torch-cluster's fps, but this would mean adding a dependency
+def furthest_point_sample(xyz, npoint) -> torch.Tensor: # TODO: We could replace this with torch-cluster's fps, but this would mean adding another dependency
     r"""
     Uses iterative furthest point sampling to select a set of npoint features that have the largest
     minimum distance
@@ -63,9 +63,7 @@ def furthest_point_sample(xyz, npoint) -> torch.Tensor: # We could replace this 
     for i in range(npoint):
         centroids[:, i] = farthest
         centroid = xyz[batch_indices, farthest, :].view(B, 1, C)
-        # Use more efficient squared distance computation
         dist = ((xyz - centroid) ** 2).sum(-1)
-        # Update minimum distances
         distance = torch.minimum(distance, dist)
         farthest = distance.argmax(-1)
     
@@ -93,10 +91,7 @@ def random_points_sample(xyz, npoint) -> torch.Tensor:
     B, N, _ = xyz.shape
     device = xyz.device
     
-    # Generate random permutation indices for each batch and take first npoint
-    # torch.randperm doesn't support batched operation, so we use torch.rand + argsort
     rand_scores = torch.rand(B, N, device=device)
-    # argsort gives indices that would sort the random scores - effectively a random permutation
     indices = torch.argsort(rand_scores, dim=1)[:, :npoint]
     
     return indices  # (B, npoint)
@@ -144,13 +139,11 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
     B, N, D = p1.shape
     M = p2.shape[1]
     
-    # Memory-aware chunking: limit peak memory to ~500MB per chunk
-    # Each distance matrix element = 4 bytes (float32)
-    # Target: chunk_size * M * 4 bytes < 500MB
+    # memory aware chunking to limit peak memory to ~500MB per chunk
     max_elements = 125_000_000  # 500MB / 4 bytes
     chunk_size = max(1, min(N, max_elements // M))
     
-    # For small problems, process in one go
+    # For small problems process in one go
     if N <= chunk_size:
         p1_f = p1.float()
         p2_f = p2.float()
@@ -173,7 +166,7 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=False)
         all_dists.append(knn_dists)
         all_idx.append(knn_idx)
-        del dists_chunk  # Free memory immediately
+        del dists_chunk
     
     return torch.cat(all_dists, dim=1), torch.cat(all_idx, dim=1)
 
@@ -193,7 +186,6 @@ def three_nn(unknown: torch.Tensor, known: torch.Tensor):
 
     d2, idx = knn_points_torch(unknown, known, K=3)
 
-    # to match pointnet2 API: return euclidean distances, not squared
     dist = torch.sqrt(torch.clamp(d2, min=0.0))
     return dist, idx
 
@@ -216,10 +208,6 @@ def three_interpolate(features: torch.Tensor,
     B, C, M = features.shape
     _, N, K = idx.shape
     assert K == 3
-
-    # Memory-efficient: gather only the 3 neighbors per query point
-    # Instead of expanding features to (B, C, N, M), we index directly
-    # idx shape: (B, N, 3) -> reshape to (B, N*3) for gather, then reshape back
     
     idx_flat = idx.view(B, N * K)  # (B, N*3)
     idx_exp = idx_flat.unsqueeze(1).expand(-1, C, -1)  # (B, C, N*3)
@@ -249,7 +237,6 @@ def grouping_operation(features: torch.Tensor, idx: torch.Tensor) -> torch.Tenso
     B, C, N = features.shape
     _, npoint, nsample = idx.shape
 
-    # Memory-efficient: flatten idx, gather, then reshape
     idx_flat = idx.view(B, npoint * nsample)  # (B, npoint*nsample)
     idx_exp = idx_flat.unsqueeze(1).expand(-1, C, -1)  # (B, C, npoint*nsample)
     
@@ -360,7 +347,7 @@ class QueryAndGroup(nn.Module):
                 grouped_xyz: (B, 3, npoint, nsample) if ret_grouped_xyz
                 unique_cnt: (B, npoint) long if ret_unique_cnt
         """
-        idx = ball_query(self.radius, self.nsample, xyz, new_xyz)  # your pure torch / knn-based version
+        idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
 
         if self.sample_uniformly:
             out = self._uniformize_indices(idx)
@@ -371,7 +358,7 @@ class QueryAndGroup(nn.Module):
 
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)                     # (B, 3, npoint, nsample)
-        grouped_xyz = grouped_xyz - new_xyz.transpose(1, 2).unsqueeze(-1)    # relative coords
+        grouped_xyz = grouped_xyz - new_xyz.transpose(1, 2).unsqueeze(-1)
         if self.normalize_xyz:
             grouped_xyz = grouped_xyz / self.radius
 
