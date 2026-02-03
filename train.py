@@ -304,25 +304,27 @@ def create_model_and_optimizer():
             else:
                 head_decay_params.append(param)
     
-    # Build param groups with discriminative LRs
-    # Weight decay only applied to backbone (pretrained), not heads (randomly initialized)
-    weight_decay = cfgs.weight_decay if cfgs.weight_decay > 0 else 0.0
-    param_groups = [
-        {'params': backbone_decay_params, 'lr': backbone_lr, 'weight_decay': weight_decay, 'name': 'backbone_decay'},
-        {'params': backbone_no_decay_params, 'lr': backbone_lr, 'weight_decay': 0.0, 'name': 'backbone_no_decay'},
-        {'params': head_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_decay'},
-        {'params': head_no_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_no_decay'},
-    ]
-    # Remove empty groups
-    param_groups = [g for g in param_groups if len(g['params']) > 0]
-    
-    # Use AdamW (handles weight decay properly even if 0)
-    optimizer = optim.AdamW(param_groups)
-    
-    log_string(f"Optimizer: AdamW with weight_decay={weight_decay} (backbone only, heads=0)")
-    log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={backbone_lr_scale}), heads={head_lr:.6f}")
-    log_string(f"Param groups: backbone_decay={len(backbone_decay_params)}, backbone_no_decay={len(backbone_no_decay_params)}, "
-               f"head_decay={len(head_decay_params)}, head_no_decay={len(head_no_decay_params)}")
+    # Choose optimizer based on weight decay setting
+    if cfgs.weight_decay > 0:
+        # Use AdamW with parameter groups for proper weight decay handling
+        weight_decay = cfgs.weight_decay
+        param_groups = [
+            {'params': backbone_decay_params, 'lr': backbone_lr, 'weight_decay': weight_decay, 'name': 'backbone_decay'},
+            {'params': backbone_no_decay_params, 'lr': backbone_lr, 'weight_decay': 0.0, 'name': 'backbone_no_decay'},
+            {'params': head_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_decay'},
+            {'params': head_no_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_no_decay'},
+        ]
+        # Remove empty groups
+        param_groups = [g for g in param_groups if len(g['params']) > 0]
+        optimizer = optim.AdamW(param_groups)
+        log_string(f"Optimizer: AdamW with weight_decay={weight_decay} (backbone only, heads=0)")
+        log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={backbone_lr_scale}), heads={head_lr:.6f}")
+        log_string(f"Param groups: backbone_decay={len(backbone_decay_params)}, backbone_no_decay={len(backbone_no_decay_params)}, "
+                   f"head_decay={len(head_decay_params)}, head_no_decay={len(head_no_decay_params)}")
+    else:
+        # Use simple Adam without weight decay
+        optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate)
+        log_string(f"Optimizer: Adam with lr={cfgs.learning_rate}")
 
     # Initialize GradScaler for AMP (to prevent small gradients from underflowing to zero)
     scaler = GradScaler(enabled=cfgs.use_amp and device.type == 'cuda')
@@ -357,9 +359,8 @@ def create_model_and_optimizer():
 
 
 def get_current_lr(epoch, base_lr):
-    """Calculate LR with decay, keeping at least 10% of base."""
-    lr = base_lr * (0.98 ** epoch)
-    lr = max(lr, 0.1 * base_lr)
+    """Calculate LR with decay (0.95^epoch)."""
+    lr = base_lr * (0.95 ** epoch)
     return lr
 
 
