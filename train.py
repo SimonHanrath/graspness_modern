@@ -185,6 +185,7 @@ def create_dataloaders():
     if cfgs.enable_stable_score:
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
+    use_rgb = (cfgs.backbone == 'transformer_pretrained')
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='train',
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
