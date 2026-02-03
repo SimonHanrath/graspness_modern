@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels
+from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels, SceneAwareSampler
 
 
 # =============================================================================
@@ -570,10 +570,14 @@ def main():
         num_points=NUM_POINTS, voxel_size=VOXEL_SIZE,
         remove_outlier=True, augment=True, load_label=True,  # augment=True matches training
     )
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True,  # shuffle=True matches training
+    # Use SceneAwareSampler to match actual training behavior
+    # This groups samples by scene for cache-friendly collision label loading
+    sampler = SceneAwareSampler(dataset, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False,  # sampler handles shuffling
+                            sampler=sampler,
                             num_workers=0, pin_memory=True,  # pin_memory=True matches training
                             collate_fn=spconv_collate_fn)
-    print(f"Dataset: {len(dataset)} samples")
+    print(f"Dataset: {len(dataset)} samples (using SceneAwareSampler)")
     
     # Load model
     print("Loading model...")

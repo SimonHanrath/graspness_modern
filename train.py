@@ -30,7 +30,7 @@ sys.path.append(os.path.join(ROOT_DIR, 'dataset'))
 
 from models.graspnet import GraspNet
 from models.loss import get_loss
-from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels, load_grasp_labels_lazy
+from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_grasp_labels, load_grasp_labels_lazy, SceneAwareSampler
 
 from tqdm import tqdm
 
@@ -218,16 +218,22 @@ def create_dataloaders():
         cfgs.max_epoch = 20
         log_string('Single-sample overfitting test enabled: 256x repeated, max_epoch set to 20')
     
-    # Create distributed samplers if running in distributed mode
+    # Create samplers
+    # SceneAwareSampler groups samples by scene to maximize collision label cache hits
+    # This is much faster than random shuffle with lazy loading
     train_sampler = None
     val_sampler = None
     if is_distributed():
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
         val_sampler = DistributedSampler(val_dataset, shuffle=False)
         log_string(f'Using DistributedSampler with {WORLD_SIZE} processes')
+    else:
+        # Use scene-aware sampling for cache-friendly data loading
+        train_sampler = SceneAwareSampler(train_dataset, shuffle=True)
+        log_string('Using SceneAwareSampler for cache-friendly collision label loading')
     
     train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, 
-                                  shuffle=(train_sampler is None),  # Only shuffle if no sampler
+                                  shuffle=False,  # Sampler handles shuffling
                                   sampler=train_sampler,
                                   num_workers=cfgs.num_workers, pin_memory=True, 
                                   persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),

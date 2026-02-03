@@ -10,10 +10,74 @@ from functools import lru_cache
 
 import torch
 import collections.abc as container_abcs
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 from utils.data_utils import CameraInfo, transform_point_cloud, create_point_cloud_from_depth_image, get_workspace_mask
 from utils.stable_score_utils import ensure_stable_labels_exist, check_stable_labels_available
+
+
+class SceneAwareSampler(Sampler):
+    """
+    A sampler that groups samples by scene to maximize cache efficiency.
+    
+    Instead of randomly sampling across all indices (which causes cache thrashing
+    with lazy-loaded collision labels), this sampler:
+    1. Shuffles the order of scenes
+    2. Shuffles frames within each scene
+    3. Returns all frames from one scene before moving to the next
+    
+    This ensures that collision labels for a scene stay in cache while all
+    frames from that scene are being processed.
+    """
+    def __init__(self, dataset, shuffle=True, seed=None):
+        """
+        Args:
+            dataset: GraspNetDataset instance
+            shuffle: If True, shuffle scenes and frames within scenes
+            seed: Random seed for reproducibility (set per epoch for distributed training)
+        """
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+        
+        # Build scene to indices mapping
+        self.scene_to_indices = {}
+        for idx, scene in enumerate(dataset.scenename):
+            if scene not in self.scene_to_indices:
+                self.scene_to_indices[scene] = []
+            self.scene_to_indices[scene].append(idx)
+        
+        self.scenes = list(self.scene_to_indices.keys())
+    
+    def __iter__(self):
+        # Create a generator for reproducibility
+        if self.shuffle:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch if self.seed is not None else self.epoch)
+            
+            # Shuffle scene order
+            scene_order = torch.randperm(len(self.scenes), generator=g).tolist()
+            
+            for scene_idx in scene_order:
+                scene = self.scenes[scene_idx]
+                indices = self.scene_to_indices[scene].copy()
+                # Shuffle frames within scene
+                frame_order = torch.randperm(len(indices), generator=g).tolist()
+                for i in frame_order:
+                    yield indices[i]
+        else:
+            # No shuffling - iterate in order
+            for scene in self.scenes:
+                for idx in self.scene_to_indices[scene]:
+                    yield idx
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def set_epoch(self, epoch):
+        """Set epoch for shuffling reproducibility (important for distributed training)."""
+        self.epoch = epoch
 
 
 class LazyGraspLabels:
@@ -76,9 +140,11 @@ class GraspNetDataset(Dataset):
                         "Failed to compute stable labels. Please install trimesh: pip install trimesh"
                     )
         
-        # Pre-load collision labels into memory (like original implementation)
-        # This uses ~25-30GB RAM but eliminates the data loading bottleneck
-        self.collision_labels = {}
+        # Cache for collision labels - use LRU cache with max size to limit memory
+        # This allows recently accessed scenes to stay in memory while releasing old ones
+        # Size of 10 scenes balances memory (~1.8GB) with hit rate for batched scene access
+        self._collision_cache = {}
+        self._collision_cache_maxsize = 10  # Keep at most 10 scenes in cache
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
@@ -101,7 +167,7 @@ class GraspNetDataset(Dataset):
         self.scenename = []
         self.frameid = []
         self.graspnesspath = []
-        for x in tqdm(self.sceneIds, desc='Loading data paths and collision labels...'):
+        for x in tqdm(self.sceneIds, desc='Loading data paths...'):
             for img_num in range(256):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
@@ -110,15 +176,39 @@ class GraspNetDataset(Dataset):
                 self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
-            # Pre-load collision labels for this scene
-            if self.load_label:
-                collision_labels_npz = np.load(os.path.join(root, 'collision_label', x.strip(), 'collision_labels.npz'))
-                self.collision_labels[x.strip()] = {}
-                for i in range(len(collision_labels_npz)):
-                    self.collision_labels[x.strip()][i] = collision_labels_npz['arr_{}'.format(i)]
+            # REMOVED: No longer loading all collision labels at initialization
+            # This prevents each DataLoader worker from holding 3GB+ of collision data in memory
 
     def scene_list(self):
         return self.scenename
+    
+    def _load_collision_labels(self, scene):
+        """
+        Lazy load collision labels for a specific scene on-demand.
+        Uses an LRU cache to keep recently accessed scenes in memory.
+        This prevents memory explosion with multiple DataLoader workers.
+        """
+        if scene in self._collision_cache:
+            return self._collision_cache[scene]
+        
+        # Load collision labels for this scene
+        collision_labels_path = os.path.join(self.root, 'collision_label', scene, 'collision_labels.npz')
+        collision_labels_npz = np.load(collision_labels_path)
+        
+        # Convert to dictionary format
+        collision_dict = {}
+        for i in range(len(collision_labels_npz)):
+            collision_dict[i] = collision_labels_npz['arr_{}'.format(i)]
+        
+        # Implement simple LRU: if cache is full, remove oldest entry
+        if len(self._collision_cache) >= self._collision_cache_maxsize:
+            # Remove the first (oldest) item
+            oldest_scene = next(iter(self._collision_cache))
+            del self._collision_cache[oldest_scene]
+        
+        # Add to cache
+        self._collision_cache[scene] = collision_dict
+        return collision_dict
     
     def _load_stable_labels(self, obj_idx): # TODO: Verify this for correctness
         """
@@ -318,7 +408,8 @@ class GraspNetDataset(Dataset):
         grasp_widths_list = []
         grasp_scores_list = []
         
-        collision_labels_scene = self.collision_labels.get(scene)
+        # Lazy load collision labels for this scene only when needed
+        collision_labels_scene = self._load_collision_labels(scene) if self.load_label else None
         
         grasp_stable_list = []  # List of stable labels per object
         
