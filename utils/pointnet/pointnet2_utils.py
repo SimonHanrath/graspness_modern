@@ -148,8 +148,7 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         p1_f = p1.float()
         p2_f = p2.float()
         dists = torch.cdist(p1_f, p2_f, p=2.0) ** 2
-        # sorted=False: faster, order doesn't matter for downstream aggregation
-        knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False, sorted=False)
+        knn_dists, knn_idx = torch.topk(dists, K, dim=2, largest=False)
         return knn_dists, knn_idx
     
     # Chunked processing for large point clouds
@@ -162,8 +161,8 @@ def knn_points_torch(p1: torch.Tensor, p2: torch.Tensor, K: int):
         p1_chunk = p1[:, i:end_i].float()
         
         dists_chunk = torch.cdist(p1_chunk, p2_f, p=2.0) ** 2
-        # sorted=False: faster, order doesn't matter for downstream aggregation
-        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False, sorted=False)
+        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False)
+        knn_dists, knn_idx = torch.topk(dists_chunk, K, dim=2, largest=False)
         all_dists.append(knn_dists)
         all_idx.append(knn_idx)
         del dists_chunk
@@ -316,7 +315,7 @@ class QueryAndGroup(nn.Module):
 
         for b in range(B):
             for p in range(P):
-                uniques = torch.unique(idx[b, p, :], sorted=False)
+                uniques = torch.unique(idx[b, p, :])
                 num_unique = uniques.numel()
                 if self.ret_unique_cnt:
                     unique_cnt[b, p] = num_unique
