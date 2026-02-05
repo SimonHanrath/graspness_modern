@@ -65,9 +65,8 @@ def process_grasp_labels(end_points):
             grasp_views_rot_trans = torch.matmul(pose[:3, :3], grasp_views_rot)  # (V, 3, 3)
 
             # assign views - for each template view, find nearest transformed view
-            # We want: for each template view (grasp_views), find the index into transformed views (grasp_views_trans)
             # OLD: knn(ref=grasp_views_trans_, query=grasp_views_) -> indices into grasp_views_trans for each grasp_views
-            # knn_query(pos, query_pos) finds neighbors in pos for each query_pos, returns indices into pos
+            # NEW: knn_query(pos=grasp_views_trans, query_pos=grasp_views) -> same semantics
             view_inds = knn_query(grasp_views_trans, k=1, query_pos=grasp_views).squeeze(-1)  # (V,)
             grasp_views_rot_trans = torch.index_select(grasp_views_rot_trans, 0, view_inds)  # (V, 3, 3)
             grasp_views_rot_trans = grasp_views_rot_trans.unsqueeze(0).expand(num_grasp_points, -1, -1,

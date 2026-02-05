@@ -73,7 +73,7 @@ class GraspNet(nn.Module):
             )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
-        self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
+        self.crop = CloudCrop(nsample=32, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)  # K=32 for better local geometry with noisy depth
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth, enable_stable_score=enable_stable_score)
 
     def forward(self, end_points):
@@ -214,8 +214,9 @@ def pred_decode(end_points, use_stable_score=False):
         use_stable_score: if True, reweight grasp scores by (1 - stable_score[rot])
     
     Returns:
-        List of grasp predictions per batch, each with shape [M_POINT, 17]:
+        List of grasp predictions per batch, each with shape [M, 17]:
         [score, width, height, depth, rotation(9), translation(3), obj_id]
+        where M = min(M_POINT, #graspable_points) is determined dynamically
     """
     batch_size = len(end_points['point_clouds'])
     grasp_preds = []
@@ -227,13 +228,15 @@ def pred_decode(end_points, use_stable_score=False):
         grasp_center = end_points['xyz_graspable'][i].float()
 
         grasp_score = end_points['grasp_score_pred'][i].float()
-        grasp_score = grasp_score.view(M_POINT, NUM_ANGLE*NUM_DEPTH)
+        # Use dynamic M based on actual tensor size (supports variable M_POINT)
+        M = grasp_score.shape[0]
+        grasp_score = grasp_score.view(M, NUM_ANGLE*NUM_DEPTH)
         
         if has_stable:
             stable_score = end_points['grasp_stable_pred'][i].float()
             # Expand stable score to match angle*depth shape 
             stable_expanded = stable_score.unsqueeze(-1).expand(-1, -1, NUM_DEPTH) 
-            stable_expanded = stable_expanded.reshape(M_POINT, NUM_ANGLE*NUM_DEPTH)
+            stable_expanded = stable_expanded.reshape(M, NUM_ANGLE*NUM_DEPTH)
             # Reweight
             grasp_score_reweighted = grasp_score * (1.0 - stable_expanded)
             # Find best grasp using reweighted scores
@@ -248,13 +251,13 @@ def pred_decode(end_points, use_stable_score=False):
         grasp_depth = (grasp_score_inds % NUM_DEPTH + 1).float() * 0.01
         grasp_depth = grasp_depth.view(-1, 1)
         grasp_width = 1.2 * end_points['grasp_width_pred'][i] / 10.
-        grasp_width = grasp_width.view(M_POINT, NUM_ANGLE*NUM_DEPTH)
+        grasp_width = grasp_width.view(M, NUM_ANGLE*NUM_DEPTH)
         grasp_width = torch.gather(grasp_width, 1, grasp_score_inds.view(-1, 1))
         grasp_width = torch.clamp(grasp_width, min=0., max=GRASP_MAX_WIDTH)
 
         approaching = -end_points['grasp_top_view_xyz'][i].float()
         grasp_rot = batch_viewpoint_params_to_matrix(approaching, grasp_angle)
-        grasp_rot = grasp_rot.view(M_POINT, 9)
+        grasp_rot = grasp_rot.view(M, 9)
 
         # merge preds
         grasp_height = 0.02 * torch.ones_like(grasp_score_final)
