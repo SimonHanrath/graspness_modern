@@ -41,6 +41,7 @@ class GraspNet(nn.Module):
         self.M_points = M_POINT
         self.num_view = NUM_VIEW
         self.enable_stable_score = enable_stable_score
+        self.backbone_type = backbone  # Store backbone type string for forward pass logic
         
         if backbone == 'resunet':
             self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
@@ -106,7 +107,7 @@ class GraspNet(nn.Module):
 
         
         # The pretrained PTv3 model expects: [x, y, z, r, g, b] where all are normalized
-        if (self.backbone == 'transformer_pretrained') and (feats.shape[1] == 3):
+        if (self.backbone_type == 'transformer_pretrained') and (feats.shape[1] == 3):
             
             coord_float = coords[:, 1:].float()  # (M, 3)
             coord_min = coord_float.min(dim=0, keepdim=True).values

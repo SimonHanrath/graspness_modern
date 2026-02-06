@@ -153,7 +153,7 @@ class GraspNetDataset(Dataset):
         elif split == 'test':
             self.sceneIds = list(range(110, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(10, 11))  # Match eval_seen which uses scene_0110
+            self.sceneIds = list(range(110, 111))  # scene_0110 for test_seen evaluation
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':

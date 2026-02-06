@@ -263,8 +263,9 @@ def create_model_and_optimizer():
         if not param.requires_grad:
             continue
         
-        # Check if this is a backbone parameter
-        is_backbone = name.startswith('backbone.')
+        # Check if this is a backbone parameter (excluding output_proj which is randomly initialized)
+        # output_proj is our added projection layer to match output dims - it's not pretrained
+        is_backbone = name.startswith('backbone.') and 'output_proj' not in name
         
         # Check if this is a normalization parameter or bias (no weight decay)
         is_norm = any(n in name.lower() for n in ['layernorm', 'layer_norm', 'batchnorm', 'batch_norm', '.bn.', '.norm.', '.norm1.', '.norm2.'])
@@ -296,7 +297,7 @@ def create_model_and_optimizer():
         param_groups = [g for g in param_groups if len(g['params']) > 0]
         optimizer = optim.AdamW(param_groups)
         log_string(f"Optimizer: AdamW with weight_decay={weight_decay} (backbone only, heads=0)")
-        log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={backbone_lr_scale}), heads={head_lr:.6f}")
+        log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={cfgs.backbone_lr_scale}), heads={head_lr:.6f}")
         log_string(f"Param groups: backbone_decay={len(backbone_decay_params)}, backbone_no_decay={len(backbone_no_decay_params)}, "
                    f"head_decay={len(head_decay_params)}, head_no_decay={len(head_no_decay_params)}")
     else:
