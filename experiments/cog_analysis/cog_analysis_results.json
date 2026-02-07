@@ -1,0 +1,27 @@
+{
+  "stable_score_model": {
+    "num_grasps": 5000,
+    "mean_cog_distance": 0.07010272145271301,
+    "std_cog_distance": 0.03933781757950783,
+    "median_cog_distance": 0.08143839985132217,
+    "mean_grasp_score": 0.4526224732398987
+  },
+  "vanilla_model": {
+    "num_grasps": 5000,
+    "mean_cog_distance": 0.0769585594534874,
+    "std_cog_distance": 0.038923393934965134,
+    "median_cog_distance": 0.0936891958117485,
+    "mean_grasp_score": 0.48913905024528503
+  },
+  "statistical_test": {
+    "test": "Mann-Whitney U (stable < vanilla)",
+    "statistic": 11457788.0,
+    "p_value": 2.593801601114026e-13,
+    "significant_at_0.05": true,
+    "significant_at_0.01": true
+  },
+  "effect_size": {
+    "cohens_d": 0.17520153522491455,
+    "interpretation": "small"
+  }
+}

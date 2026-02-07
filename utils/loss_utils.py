@@ -10,7 +10,7 @@ GRASPNESS_THRESHOLD = 0.01 # instead of 0.1
 NUM_VIEW = 300  
 NUM_ANGLE = 12  
 NUM_DEPTH = 4
-M_POINT = 2048  # Increased from 1024 for better grasp recall in clutter
+M_POINT = 1024
 
 
 def transform_point_cloud(cloud, transform, format='4x4'):

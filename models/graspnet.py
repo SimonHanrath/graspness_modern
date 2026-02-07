@@ -74,7 +74,7 @@ class GraspNet(nn.Module):
             )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
-        self.crop = CloudCrop(nsample=32, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)  # K=32 for better local geometry with noisy depth
+        self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth, enable_stable_score=enable_stable_score)
 
     def forward(self, end_points):

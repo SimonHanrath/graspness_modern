@@ -65,6 +65,8 @@ def parse_args():
                         help='Path to PTv3 pretrained weights (.pth file)')
     parser.add_argument('--enable_flash', action='store_true', default=False,
                         help='Enable flash attention in PTv3 backbone')
+    parser.add_argument('--enable_stable_score', action='store_true', default=False,
+                        help='Enable stable score prediction (use with models trained with --enable_stable_score)')
     
     # Visualization options
     parser.add_argument('--num_grasps', type=int, default=10,
@@ -329,6 +331,7 @@ def run_inference(data_input, args):
         backbone=args.backbone,
         ptv3_pretrained_path=args.ptv3_pretrained_path,
         enable_flash=args.enable_flash,
+        enable_stable_score=args.enable_stable_score,
     )
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -340,6 +343,8 @@ def run_inference(data_input, args):
     start_epoch = checkpoint['epoch']
     print(f"-> Loaded checkpoint {args.checkpoint_path} (epoch: {start_epoch})")
     print(f"   Backbone: {args.backbone}")
+    if args.enable_stable_score:
+        print("   Stable score enabled: grasps will be reweighted by (1 - stable_score) during ranking")
     
     net.eval()
     
@@ -356,7 +361,7 @@ def run_inference(data_input, args):
     tic = time.time()
     with torch.inference_mode():
         end_points = net(batch_data)
-        grasp_preds = pred_decode(end_points)
+        grasp_preds = pred_decode(end_points, use_stable_score=args.enable_stable_score)
     
     preds = grasp_preds[0].detach().cpu().numpy()
     
@@ -625,6 +630,8 @@ def main():
     
     print(f"Backbone: {args.backbone}")
     print(f"Checkpoint: {args.checkpoint_path}")
+    if args.enable_stable_score:
+        print(f"Stable Score: ENABLED")
     print("=" * 60)
     
     # Create dump directory

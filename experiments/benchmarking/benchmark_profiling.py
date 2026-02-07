@@ -1,4 +1,5 @@
 """
+This is vibe coded and needs checking
 Detailed profiling of GraspNet forward pass stages and operations.
 
 Tracks time for:
@@ -30,7 +31,7 @@ from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_gr
 # =============================================================================
 DATASET_ROOT = "/datasets/graspnet"
 CAMERA = "realsense"
-CHECKPOINT = "/workspace/logs/gsnet_resunet_stable_score/gsnet_resunet_epoch08.tar"
+CHECKPOINT = project_root / "logs/gsnet_resunet_vanilla_6/gsnet_resunet_epoch20.tar"
 NUM_POINTS = 15000
 VOXEL_SIZE = 0.005
 N_WARMUP = 3
@@ -161,7 +162,7 @@ def profiled_forward(net, end_points):
             max(int(extent[2].item()), MIN_SPATIAL_DIM),
         )
         
-        if net.use_rgb and feats.shape[1] == 3:
+        if net.backbone_type == "transformer_pretrained" and feats.shape[1] == 3:
             coord_float = coords[:, 1:].float()
             coord_min = coord_float.min(dim=0, keepdim=True).values
             coord_max = coord_float.max(dim=0, keepdim=True).values

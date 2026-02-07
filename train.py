@@ -72,8 +72,8 @@ parser.add_argument('--backbone_lr_scale', type=float, default=None,
                     help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
-parser.add_argument('--lambda_stable', type=float, default=1.0,
-                    help='Weight for stable score loss term [default: 1.0]')
+parser.add_argument('--lambda_stable', type=float, default=10.0,
+                    help='Weight for stable score loss term [default: 10.0]')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')

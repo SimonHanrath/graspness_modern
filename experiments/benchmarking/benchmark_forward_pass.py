@@ -1,4 +1,6 @@
-"""Benchmarking script for GraspNet model forward and backward pass.
+"""
+This is vibe coded and needs checking
+Benchmarking script for GraspNet model forward and backward pass.
 
 Measures inference and training time on actual data with warmup phase
 to handle JIT compilation overhead.

@@ -250,8 +250,8 @@ class GraspNetDataset(Dataset):
             for i in range(len(object_poses_list)):
                 object_poses_list[i] = np.dot(flip_mat, object_poses_list[i]).astype(np.float32)
 
-        # Rotation along up-axis/Z-axis
-        rot_angle = (np.random.random() * np.pi / 3) - np.pi / 6  # -30 ~ +30 degree
+        # Rotation along up-axis/Z-axis: Uniform[-30°, +30°]
+        rot_angle = (np.random.random() * np.pi / 3) - np.pi / 6
         c, s = np.cos(rot_angle), np.sin(rot_angle)
         rot_mat = np.array([[1, 0, 0],
                             [0, c, -s],
@@ -259,6 +259,16 @@ class GraspNetDataset(Dataset):
         point_clouds = transform_point_cloud(point_clouds, rot_mat, '3x3')
         for i in range(len(object_poses_list)):
             object_poses_list[i] = np.dot(rot_mat, object_poses_list[i]).astype(np.float32)
+
+        # Random translation: X/Y in [-0.2, 0.2]m, Z in [-0.1, 0.2]m
+        translation = np.array([
+            np.random.uniform(-0.2, 0.2),
+            np.random.uniform(-0.2, 0.2),
+            np.random.uniform(-0.1, 0.2)
+        ], dtype=np.float32)
+        point_clouds = point_clouds + translation
+        for i in range(len(object_poses_list)):
+            object_poses_list[i][:, 3] += translation
 
         return point_clouds, object_poses_list
 

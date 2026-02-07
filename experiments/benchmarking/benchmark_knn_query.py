@@ -1,4 +1,5 @@
 """
+This is vibe coded and needs checking
 Benchmarking script for knn_query function in utils/knn_utils.py
 
 Measures performance across:
