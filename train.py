@@ -74,6 +74,10 @@ parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
+parser.add_argument('--cosine_lr', action='store_true', default=False,
+                    help='Use cosine annealing LR schedule with warmup instead of exponential decay')
+parser.add_argument('--warmup_epochs', type=int, default=2,
+                    help='Number of warmup epochs for cosine LR schedule [default: 2]')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')
@@ -338,9 +342,18 @@ def create_model_and_optimizer():
 
 
 def get_current_lr(epoch, base_lr):
-    """Calculate LR with decay (0.95^epoch)."""
-    lr = base_lr * (0.95 ** epoch)
-    return lr
+    """Calculate LR based on schedule (exponential or cosine with warmup)."""
+    if cfgs.cosine_lr:
+        # Cosine annealing with linear warmup
+        if epoch < cfgs.warmup_epochs:
+            return base_lr * (epoch + 1) / cfgs.warmup_epochs
+        else:
+            import math
+            progress = (epoch - cfgs.warmup_epochs) / max(1, cfgs.max_epoch - cfgs.warmup_epochs)
+            return base_lr * 0.5 * (1 + math.cos(math.pi * progress))
+    else:
+        # Exponential decay (original)
+        return base_lr * (0.95 ** epoch)
 
 
 def adjust_learning_rate(optimizer, epoch):

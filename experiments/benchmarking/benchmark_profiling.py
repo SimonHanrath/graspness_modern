@@ -31,8 +31,8 @@ from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_gr
 # =============================================================================
 DATASET_ROOT = "/datasets/graspnet"
 CAMERA = "realsense"
-CHECKPOINT = project_root / "logs/gsnet_resunet_vanilla_6/gsnet_resunet_epoch20.tar"
-NUM_POINTS = 15000
+CHECKPOINT = project_root / "logs/gsnet_resunet_strong_stable_score_augmented_n20k/gsnet_resunet_epoch06.tar"
+NUM_POINTS = 20000
 VOXEL_SIZE = 0.005
 N_WARMUP = 3
 N_RUNS = 10
@@ -421,9 +421,23 @@ def run_profiled_benchmark(net, dataloader, device, n_warmup=3, n_runs=10):
 def plot_breakdown(stage_times, op_times, total_time, output_path, iter_times=None):
     """Create visualization of timing breakdown."""
     
+    def make_autopct(values, threshold_pct=5):
+        """Create autopct function that shows milliseconds, hiding small slices."""
+        def autopct(pct):
+            if pct < threshold_pct:
+                return ''  # Don't show text for small slices
+            total = sum(values)
+            val = pct * total / 100.0
+            return f'{val:.1f}ms'
+        return autopct
+    
+    def make_legend_labels(names, values):
+        """Create legend labels with name and value."""
+        return [f'{name}: {val:.1f}ms' for name, val in zip(names, values)]
+    
     if iter_times:
-        # 3 plots: full iteration, stage breakdown, operations
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        # 2 plots: full iteration, stage breakdown
+        fig, axes = plt.subplots(1, 2, figsize=(16, 7))
         
         # Plot 1: Full iteration breakdown (what really matters)
         ax = axes[0]
@@ -436,9 +450,13 @@ def plot_breakdown(stage_times, op_times, total_time, output_path, iter_times=No
         ]
         colors_iter = ['#e74c3c', '#3498db', '#2ecc71', '#9b59b6']
         
-        wedges, texts, autotexts = ax.pie(times_iter, labels=components, autopct='%1.1f%%',
+        wedges, texts, autotexts = ax.pie(times_iter, autopct=make_autopct(times_iter),
                                            colors=colors_iter, startangle=90,
-                                           explode=(0.05, 0, 0, 0))  # Explode data loading
+                                           explode=(0.05, 0, 0, 0),
+                                           pctdistance=0.75)
+        # Use legend instead of labels to avoid overlap
+        ax.legend(wedges, make_legend_labels(components, times_iter),
+                  loc='upper left', bbox_to_anchor=(-0.1, 1), fontsize=9)
         ax.set_title(f'Full Training Iteration\n(Total: {iter_times["iteration_mean"]:.0f}ms)', fontsize=14)
         
         # Plot 2: Forward pass stage breakdown
@@ -451,17 +469,17 @@ def plot_breakdown(stage_times, op_times, total_time, output_path, iter_times=No
             times_stage.append(other)
         
         colors_stage = plt.cm.Set3(np.linspace(0, 1, len(stages)))
-        wedges, texts, autotexts = ax.pie(times_stage, labels=stages, autopct='%1.1f%%',
-                                           colors=colors_stage, startangle=90)
+        wedges, texts, autotexts = ax.pie(times_stage, autopct=make_autopct(times_stage),
+                                           colors=colors_stage, startangle=90,
+                                           pctdistance=0.75)
+        # Use legend instead of labels to avoid overlap
+        ax.legend(wedges, make_legend_labels(stages, times_stage),
+                  loc='upper left', bbox_to_anchor=(-0.1, 1), fontsize=9)
         ax.set_title(f'Forward Pass Breakdown\n(Total: {total_time:.1f}ms)', fontsize=14)
-        
-        # Plot 3: Operations breakdown (horizontal bar)
-        ax = axes[2]
     else:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig, ax = plt.subplots(1, 1, figsize=(10, 7))
         
-        # Plot 1: Stage breakdown (pie chart)
-        ax = axes[0]
+        # Stage breakdown (pie chart)
         stages = ['backbone', 'graspable', 'fps_filtering', 'rotation', 'label_processing', 'crop', 'swad', 'prepare_sparse']
         times_stage = [stage_times.get(s, 0) for s in stages]
         other = total_time - sum(times_stage)
@@ -470,35 +488,13 @@ def plot_breakdown(stage_times, op_times, total_time, output_path, iter_times=No
             times_stage.append(other)
         
         colors_stage = plt.cm.Set3(np.linspace(0, 1, len(stages)))
-        wedges, texts, autotexts = ax.pie(times_stage, labels=stages, autopct='%1.1f%%',
-                                           colors=colors_stage, startangle=90)
+        wedges, texts, autotexts = ax.pie(times_stage, autopct=make_autopct(times_stage),
+                                           colors=colors_stage, startangle=90,
+                                           pctdistance=0.75)
+        # Use legend instead of labels to avoid overlap
+        ax.legend(wedges, make_legend_labels(stages, times_stage),
+                  loc='upper left', bbox_to_anchor=(-0.15, 1), fontsize=9)
         ax.set_title(f'Stage Breakdown (Total: {total_time:.1f}ms)', fontsize=14)
-        
-        # Plot 2: Operations breakdown
-        ax = axes[1]
-    
-    # Operations bar chart (common to both layouts)
-    ops = ['fps', 'gather', 'knn_points', 'knn_query', 'ball_query', 'three_nn', 'interpolate']
-    op_vals = [op_times.get(o, 0) for o in ops]
-    
-    # Filter out zero values
-    ops_filtered = [o for o, v in zip(ops, op_vals) if v > 0]
-    vals_filtered = [v for v in op_vals if v > 0]
-    
-    if vals_filtered:
-        y_pos = np.arange(len(ops_filtered))
-        bars = ax.barh(y_pos, vals_filtered, color='#3498db', edgecolor='black')
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(ops_filtered)
-        ax.set_xlabel('Time (ms)', fontsize=12)
-        ax.set_title('Operation Times', fontsize=14)
-        ax.grid(True, alpha=0.3, axis='x')
-        
-        for bar, val in zip(bars, vals_filtered):
-            ax.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height()/2,
-                    f'{val:.2f}ms', va='center', fontsize=10)
-    else:
-        ax.text(0.5, 0.5, 'No operations tracked', ha='center', va='center', transform=ax.transAxes)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
