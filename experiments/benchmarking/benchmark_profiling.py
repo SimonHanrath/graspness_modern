@@ -32,7 +32,7 @@ from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_gr
 DATASET_ROOT = "/datasets/graspnet"
 CAMERA = "realsense"
 CHECKPOINT = project_root / "logs/gsnet_resunet_strong_stable_score_augmented_n20k/gsnet_resunet_epoch06.tar"
-NUM_POINTS = 20000
+NUM_POINTS = 300000
 VOXEL_SIZE = 0.005
 N_WARMUP = 3
 N_RUNS = 10

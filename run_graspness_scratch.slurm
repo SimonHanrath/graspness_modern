@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=graspness
-#SBATCH --partition=2080-galvani
+#SBATCH --partition=a100-galvani
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -54,8 +54,12 @@ singularity exec --nv \
       --log_dir logs/gsnet_dev \
       --max_epoch 15 \
       --batch_size 1 \
+      --num_point 300000 \
       --num_workers 8 \
       --use_amp \
       --lazy_grasp_labels
   "
+
+# Using A100 (40GB+) - 300k points should fit comfortably
+# With batch_size=1 and AMP, expect ~15-20GB VRAM usage
 

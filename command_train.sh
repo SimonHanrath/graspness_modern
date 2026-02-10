@@ -14,4 +14,4 @@
 
 python train.py --dataset_root /datasets/graspnet --camera realsense \
    --model_name gsnet_resunet_stable --log_dir logs/gsnet_stable_score --learning_rate 0.001 \
-   --max_epoch 20 --batch_size 1 --backbone resunet --enable_stable_score --use_amp --single_sample --num_point 20000\
+   --max_epoch 20 --batch_size 1 --backbone resunet --single_sample --use_amp --num_point 300000 \

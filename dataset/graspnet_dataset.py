@@ -112,7 +112,7 @@ class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
                  enable_stable_score=False):
-        assert (num_points <= 50000)
+        assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
         self.voxel_size = voxel_size
