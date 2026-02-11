@@ -45,6 +45,8 @@ class GraspNet(nn.Module):
         
         if backbone == 'resunet':
             self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        elif backbone == 'resunet_rgb':
+            self.backbone = SPconvUNet14D(in_channels=6, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'pointnet2':
             self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
         elif backbone == 'transformer_pretrained':
@@ -106,8 +108,8 @@ class GraspNet(nn.Module):
         coords_bxyz = coords.contiguous().to(torch.int32)
 
         
-        # The pretrained PTv3 model expects: [x, y, z, r, g, b] where all are normalized
-        if (self.backbone_type == 'transformer_pretrained') and (feats.shape[1] == 3):
+        # 6-channel input: [x, y, z, r, g, b] where all are normalized
+        if (self.backbone_type in ['transformer_pretrained', 'resunet_rgb']) and (feats.shape[1] == 3):
             
             coord_float = coords[:, 1:].float()  # (M, 3)
             coord_min = coord_float.min(dim=0, keepdim=True).values

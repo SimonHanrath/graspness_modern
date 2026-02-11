@@ -58,8 +58,8 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet'],
-                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
+                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights. Use resunet_rgb for ResUNet with RGB features.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
@@ -189,7 +189,7 @@ def create_dataloaders():
     if cfgs.enable_stable_score:
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
-    use_rgb = (cfgs.backbone == 'transformer_pretrained')
+    use_rgb = (cfgs.backbone in ['transformer_pretrained', 'resunet_rgb'])
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='train',
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,

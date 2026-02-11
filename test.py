@@ -30,8 +30,8 @@ parser.add_argument('--collision_thresh', type=float, default=0.01,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--eval', action='store_true', default=False)
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet'],
-                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
+                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights. Use resunet_rgb for ResUNet with RGB features.')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
                     help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
 parser.add_argument('--enable_flash', action='store_true', default=False,
@@ -52,10 +52,10 @@ def my_worker_init_fn(worker_id):
 
 
 def inference():
-    # Auto-enable RGB for transformer_pretrained backbone (requires 6-channel input)
-    use_rgb = (cfgs.backbone == 'transformer_pretrained')
+    # Auto-enable RGB for backbones that require 6-channel input (XYZ + RGB)
+    use_rgb = (cfgs.backbone in ['transformer_pretrained', 'resunet_rgb'])
     if use_rgb:
-        print("Using RGB features for 6-channel input (XYZ + RGB) - required for transformer_pretrained")
+        print("Using RGB features for 6-channel input (XYZ + RGB)")
     
     test_dataset = GraspNetDataset(cfgs.dataset_root, split='test_seen', camera=cfgs.camera, num_points=cfgs.num_point,
                                    voxel_size=cfgs.voxel_size, remove_outlier=True, augment=False, load_label=False,
