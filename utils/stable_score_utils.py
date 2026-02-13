@@ -110,7 +110,7 @@ def compute_stable_score_for_object(grasp_label_path, mesh_path, num_views=300, 
     
     The stable score measures how likely a grasp will cause tipping.
     It is the normalized perpendicular distance from the object's COG
-    to the gripper closing plane.
+    to the gripper plane.
     
     Args:
         grasp_label_path: Path to grasp label file (xxx_labels.npz)
@@ -151,7 +151,7 @@ def compute_stable_score_for_object(grasp_label_path, mesh_path, num_views=300, 
             cog_to_point = cog - grasp_point
             distance = np.abs(np.dot(plane_normal, cog_to_point))
             
-            # Same distance for all angles (stable is angle-independent geometrically)
+            # Same distance for all angles (stable score is angle-independent)
             stable[p_idx, v_idx, :] = distance
     
     # Normalize per object: divide by max distance

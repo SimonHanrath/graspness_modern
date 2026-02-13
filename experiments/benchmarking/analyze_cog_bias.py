@@ -48,18 +48,18 @@ from PIL import Image
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_root', default=None, required=True, help='Path to GraspNet dataset')
 parser.add_argument('--stable_checkpoint', 
-                    default='logs/gsnet_resunet_strong_stable_score_augmented_n20k/gsnet_resunet_epoch09.tar',
+                    default='logs/gsnet_stable_score/gsnet_resunet_strong_stable_single_sample_epoch20.tar',
                     help='Path to stable score model checkpoint')
 parser.add_argument('--vanilla_checkpoint', 
-                    default='logs/gsnet_resunet_vanilla_bigger_fields/gsnet_resunet_epoch09.tar',
+                    default='logs/gsnet_stable_score/gsnet_resunet_no_stable_single_sample_epoch10.tar',
                     help='Path to vanilla model checkpoint')
 parser.add_argument('--output_dir', default='experiments/cog_analysis', help='Output directory for results')
 parser.add_argument('--camera', default='realsense', help='Camera type [realsense/kinect]')
-parser.add_argument('--num_point', type=int, default=20000, help='Point Number')
+parser.add_argument('--num_point', type=int, default=15000, help='Point Number')
 parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
 parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel size')
-parser.add_argument('--num_scenes', type=int, default=50, help='Number of scenes to analyze (for quick test)')
-parser.add_argument('--top_k_grasps', type=int, default=100, help='Number of top grasps to analyze per scene')
+parser.add_argument('--num_scenes', type=int, default=1, help='Number of scenes to analyze (for quick test)')
+parser.add_argument('--top_k_grasps', type=int, default=10, help='Number of top grasps to analyze per scene')
 parser.add_argument('--backbone', type=str, default='resunet', help='Backbone architecture')
 parser.add_argument('--seed_feat_dim', type=int, default=512, help='Seed feature dimension')
 cfgs = parser.parse_args()
@@ -557,7 +557,7 @@ def main():
     print("\nLoading dataset...")
     test_dataset = GraspNetDataset(
         cfgs.dataset_root, 
-        split='test_seen', 
+        split='train', 
         camera=cfgs.camera, 
         num_points=cfgs.num_point,
         voxel_size=cfgs.voxel_size, 

@@ -1,27 +1,27 @@
 {
   "stable_score_model": {
-    "num_grasps": 5000,
-    "mean_cog_distance": 0.0776432603597641,
-    "std_cog_distance": 0.037995342165231705,
-    "median_cog_distance": 0.09078313410282135,
-    "mean_grasp_score": 0.35023608803749084
+    "num_grasps": 10,
+    "mean_cog_distance": 0.06740225851535797,
+    "std_cog_distance": 0.017661966383457184,
+    "median_cog_distance": 0.06748922169208527,
+    "mean_grasp_score": 0.9802865982055664
   },
   "vanilla_model": {
-    "num_grasps": 5000,
-    "mean_cog_distance": 0.07674329727888107,
-    "std_cog_distance": 0.0364237055182457,
-    "median_cog_distance": 0.08633103966712952,
-    "mean_grasp_score": 0.4478554129600525
+    "num_grasps": 10,
+    "mean_cog_distance": 0.05602114275097847,
+    "std_cog_distance": 0.01594189740717411,
+    "median_cog_distance": 0.054226040840148926,
+    "mean_grasp_score": 0.10697612911462784
   },
   "statistical_test": {
     "test": "Mann-Whitney U (stable < vanilla)",
-    "statistic": 12819433.5,
-    "p_value": 0.9865509366950453,
+    "statistic": 67.0,
+    "p_value": 0.9070616338170621,
     "significant_at_0.05": false,
     "significant_at_0.01": false
   },
   "effect_size": {
-    "cohens_d": -0.024180972948670387,
-    "interpretation": "small"
+    "cohens_d": -0.6764838099479675,
+    "interpretation": "medium"
   }
 }

@@ -13,5 +13,5 @@
 #  --max_epoch 20 --batch_size 1 --backbone transformer_pretrained --single_sample --backbone_lr_scale 0.1 --use_amp --grad_clip 3.0 --weight_decay 0.02
 
 python train.py --dataset_root /datasets/graspnet --camera realsense \
-   --model_name gsnet_resunet_stable --log_dir logs/gsnet_stable_score --learning_rate 0.001 \
-   --max_epoch 20 --batch_size 1 --backbone resunet --single_sample --use_amp --num_point 15000 \
+   --model_name gsnet_resunet_strong_stable_single_sample --log_dir logs/gsnet_stable_score --learning_rate 0.001 \
+   --max_epoch 20 --batch_size 1 --backbone resunet --single_sample --use_amp --num_point 15000 --cosine_lr --warmup_epochs 2 --enable_stable_score --lambda_stable 1000

@@ -38,6 +38,9 @@ parser.add_argument('--enable_flash', action='store_true', default=False,
                     help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to reweight grasps during ranking [default: False]')
+parser.add_argument('--split', type=str, default='test_seen',
+                    choices=['test', 'test_seen', 'test_seen_single', 'test_similar', 'test_novel', 'test_novel_single'],
+                    help='Dataset split to evaluate on [default: test_seen]')
 cfgs = parser.parse_args()
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
@@ -57,10 +60,10 @@ def inference():
     if use_rgb:
         print("Using RGB features for 6-channel input (XYZ + RGB)")
     
-    test_dataset = GraspNetDataset(cfgs.dataset_root, split='test_seen', camera=cfgs.camera, num_points=cfgs.num_point,
+    test_dataset = GraspNetDataset(cfgs.dataset_root, split=cfgs.split, camera=cfgs.camera, num_points=cfgs.num_point,
                                    voxel_size=cfgs.voxel_size, remove_outlier=True, augment=False, load_label=False,
                                    use_rgb=use_rgb)
-    print('Test dataset length: ', len(test_dataset))
+    print(f'Test dataset length: {len(test_dataset)} (split: {cfgs.split})')
     scene_list = test_dataset.scene_list()
     test_dataloader = DataLoader(test_dataset, batch_size=cfgs.batch_size, shuffle=False,
                                  num_workers=0, worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
@@ -182,8 +185,25 @@ def inference():
 
 
 def evaluate(dump_dir):
-    ge = GraspNetEval(root=cfgs.dataset_root, camera=cfgs.camera, split='test_seen')
-    res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6)
+    # Map split variants to their base eval split
+    eval_split = cfgs.split
+    if cfgs.split in ['test_seen_single']:
+        eval_split = 'test_seen'
+    elif cfgs.split in ['test_novel_single']:
+        eval_split = 'test_novel'
+    
+    ge = GraspNetEval(root=cfgs.dataset_root, camera=cfgs.camera, split=eval_split)
+    
+    # Call appropriate eval method based on split
+    if eval_split == 'test_seen':
+        res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6)
+    elif eval_split == 'test_similar':
+        res, ap = ge.eval_similar(dump_folder=dump_dir, proc=6)
+    elif eval_split == 'test_novel':
+        res, ap = ge.eval_novel(dump_folder=dump_dir, proc=6)
+    else:
+        res, ap = ge.eval_all(dump_folder=dump_dir, proc=6)
+    
     save_dir = os.path.join(cfgs.dump_dir, 'ap_{}.npy'.format(cfgs.camera))
     np.save(save_dir, res)
 

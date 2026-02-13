@@ -6,7 +6,7 @@ import torch
 import numpy as np
 
 GRASP_MAX_WIDTH = 0.10  
-GRASPNESS_THRESHOLD = 0.01 # instead of 0.1
+GRASPNESS_THRESHOLD = 0.01  # Original threshold
 NUM_VIEW = 300  
 NUM_ANGLE = 12  
 NUM_DEPTH = 4

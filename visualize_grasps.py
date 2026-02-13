@@ -30,6 +30,7 @@ from models.graspnet import GraspNet, pred_decode
 from dataset.graspnet_dataset import spconv_collate_fn
 from utils.collision_detector import ModelFreeCollisionDetector
 from utils.data_utils import CameraInfo, create_point_cloud_from_depth_image, get_workspace_mask
+from utils.stable_score_utils import compute_mesh_cog, HAS_TRIMESH
 
 
 def parse_args():
@@ -85,6 +86,8 @@ def parse_args():
     # Interactive visualization
     parser.add_argument('--interactive', action='store_true', default=False,
                         help='Create interactive HTML visualization using plotly (if installed)')
+    parser.add_argument('--show_cog', action='store_true', default=False,
+                        help='Show object centers of gravity in visualization (requires dataset scene, not npz)')
     
     return parser.parse_args()
 
@@ -242,6 +245,44 @@ def load_scene_data(args):
         'cloud_colors': colors_sampled.astype(np.float32) / 255.0,
     }
     
+    # Load COG data if requested
+    if getattr(args, 'show_cog', False):
+        obj_idxs = meta['cls_indexes'].flatten().astype(np.int32)
+        poses = meta['poses']  # (3, 4, num_objects)
+        
+        cogs_camera = []  # COGs transformed to camera frame (with offset applied)
+        for i, obj_idx in enumerate(obj_idxs):
+            # Load COG for this object
+            obj_id_str = str(obj_idx - 1).zfill(3)
+            stable_file = os.path.join(root, 'stable_labels', f'{obj_id_str}_stable.npz')
+            mesh_path = os.path.join(root, 'models', obj_id_str, 'nontextured.ply')
+            
+            cog_obj = None
+            if os.path.exists(stable_file):
+                data = np.load(stable_file)
+                if 'cog' in data:
+                    cog_obj = data['cog']
+            
+            if cog_obj is None and os.path.exists(mesh_path) and HAS_TRIMESH:
+                try:
+                    cog_obj = compute_mesh_cog(mesh_path)
+                except:
+                    pass
+            
+            if cog_obj is not None:
+                # Transform COG to camera frame
+                pose = poses[:, :, i]  # (3, 4)
+                cog_cam = pose[:3, :3] @ cog_obj + pose[:3, 3]
+                # Apply the same offset as the point cloud
+                cog_cam_shifted = cog_cam + offset
+                cogs_camera.append({
+                    'obj_idx': obj_idx,
+                    'cog': cog_cam_shifted.astype(np.float32)
+                })
+        
+        ret_dict['cogs'] = cogs_camera
+        print(f"   Loaded COGs for {len(cogs_camera)} objects")
+    
     return ret_dict
 
 
@@ -348,22 +389,29 @@ def run_inference(data_input, args):
     
     net.eval()
     
-    # Move data to device
+    # Move data to device (skip non-tensor keys like 'cogs')
     for key in batch_data:
+        if key == 'cogs':
+            continue  # Skip COG data, it's not needed for inference
         if 'list' in key:
             for i in range(len(batch_data[key])):
                 for j in range(len(batch_data[key][i])):
                     batch_data[key][i][j] = batch_data[key][i][j].to(device)
-        else:
+        elif hasattr(batch_data[key], 'to'):
             batch_data[key] = batch_data[key].to(device)
     
     # Forward pass
     tic = time.time()
     with torch.inference_mode():
         end_points = net(batch_data)
-        grasp_preds = pred_decode(end_points, use_stable_score=args.enable_stable_score)
+        grasp_preds, stable_scores_list = pred_decode(
+            end_points, 
+            use_stable_score=args.enable_stable_score,
+            return_stable_scores=True
+        )
     
     preds = grasp_preds[0].detach().cpu().numpy()
+    stable_scores = stable_scores_list[0].detach().cpu().numpy()
     
     # Transform grasp centers back to camera coordinates
     if 'cloud_offset' in batch_data:
@@ -379,31 +427,56 @@ def run_inference(data_input, args):
         mfcdetector = ModelFreeCollisionDetector(cloud, voxel_size=args.voxel_size_cd)
         collision_mask = mfcdetector.detect(gg, approach_dist=0.05, collision_thresh=args.collision_thresh)
         gg = gg[~collision_mask]
+        stable_scores = stable_scores[~collision_mask]
         print(f"   Collision filtering: {collision_mask.sum()} / {len(collision_mask)} grasps removed")
     
     toc = time.time()
     print(f'   Inference time: {toc - tic:.2f}s')
     print(f'   Total grasps detected: {len(gg)}')
     
-    return gg
+    return gg, stable_scores
 
 
-def visualize_grasps(point_cloud, colors, grasp_group, args, scene_id, index):
-    """Create matplotlib visualization of point cloud with grasps."""
-    # Apply NMS and sort by score
+def visualize_grasps(point_cloud, colors, grasp_group, args, scene_id, index, cogs=None, stable_scores=None):
+    """Create matplotlib visualization of point cloud with grasps.
+    
+    Args:
+        cogs: Optional list of {'obj_idx': int, 'cog': np.array} for COG visualization
+        stable_scores: Optional array of stable scores per grasp (before NMS)
+    """
+    # Store stable scores in grasp array before NMS so they stay aligned
+    # We'll use the object_ids field (column 16, index 16) which is typically -1
+    if stable_scores is not None and len(stable_scores) == len(grasp_group):
+        # Store stable score in obj_ids field temporarily
+        grasp_group.object_ids[:] = (stable_scores * 10000).astype(np.int32)  # Scale to preserve precision
+    
+    # Apply NMS
     gg = grasp_group.nms()
+    
+    # Extract stable scores back from obj_ids after NMS
+    if stable_scores is not None:
+        stable_scores = gg.object_ids / 10000.0  # Restore from scaled integer
+    
     gg = gg.sort_by_score()
+    
+    # Extract stable scores again after sorting (they stay with their grasps)
+    if stable_scores is not None:
+        stable_scores = gg.object_ids / 10000.0
     
     # Filter by score threshold
     if args.score_thresh > 0:
         mask = gg.scores >= args.score_thresh
         gg = gg[mask]
+        if stable_scores is not None:
+            stable_scores = stable_scores[mask]
         print(f"   After score filtering (>{args.score_thresh}): {len(gg)} grasps")
     
     # Limit number of grasps
     num_grasps = min(args.num_grasps, len(gg)) if not args.show_all_grasps else len(gg)
     if num_grasps > 0:
         gg = gg[:num_grasps]
+        if stable_scores is not None:
+            stable_scores = stable_scores[:num_grasps]
     
     print(f"   Visualizing {len(gg)} grasps")
     
@@ -454,6 +527,18 @@ def visualize_grasps(point_cloud, colors, grasp_group, args, scene_id, index):
             poly.set_linewidth(0.1)
             ax.add_collection3d(poly)
     
+    # Plot COGs if available
+    if cogs is not None and len(cogs) > 0:
+        cog_colors = ['cyan', 'magenta', 'yellow', 'orange', 'purple', 'pink', 'lime', 'coral']
+        for i, cog_data in enumerate(cogs):
+            cog = cog_data['cog'] - offset  # Transform back to camera coords
+            obj_idx = cog_data['obj_idx']
+            color = cog_colors[i % len(cog_colors)]
+            ax.scatter([cog[0]], [cog[1]], [cog[2]], 
+                      c=color, marker='D', s=150, edgecolors='black', linewidths=1.5,
+                      label=f'COG obj_{obj_idx}', zorder=10)
+        ax.legend(loc='upper left', fontsize=8)
+    
     # Set labels and title
     ax.set_xlabel('X (m)', fontsize=12)
     ax.set_ylabel('Y (m)', fontsize=12)
@@ -496,7 +581,7 @@ def visualize_grasps(point_cloud, colors, grasp_group, args, scene_id, index):
     # Create interactive HTML if requested
     if args.interactive:
         html_path = create_interactive_visualization(
-            pc_camera, colors, gg, args, vis_dir, index
+            pc_camera, colors, gg, args, vis_dir, index, cogs=cogs, stable_scores=stable_scores
         )
         if html_path:
             print(f"   Interactive HTML saved to: {html_path}")
@@ -504,10 +589,14 @@ def visualize_grasps(point_cloud, colors, grasp_group, args, scene_id, index):
     return fig_path
 
 
-def create_interactive_visualization(pc, colors, gg, args, vis_dir, index):
+def create_interactive_visualization(pc, colors, gg, args, vis_dir, index, cogs=None, stable_scores=None):
     """
     Create an interactive HTML visualization using plotly.
     Returns None if plotly is not installed.
+    
+    Args:
+        cogs: Optional list of {'obj_idx': int, 'cog': np.array} for COG visualization
+        stable_scores: Optional array of stable scores per grasp (after NMS)
     """
     try:
         import plotly.graph_objects as go
@@ -550,25 +639,43 @@ def create_interactive_visualization(pc, colors, gg, args, vis_dir, index):
             grasp.translation, grasp.rotation_matrix, grasp.width, grasp.depth
         )
         
+        # Get stable score for this grasp if available
+        stable_str = ""
+        if stable_scores is not None and idx < len(stable_scores):
+            stable_str = f", stable={stable_scores[idx]:.3f}"
+        
         # Color based on rank
         if idx == 0:
             color = 'red'
-            name = f'Grasp {idx+1} (Best, score={grasp.score:.3f})'
+            name = f'Grasp {idx+1} (Best, score={grasp.score:.3f}{stable_str})'
         elif idx == 1:
             color = 'green'
-            name = f'Grasp {idx+1} (score={grasp.score:.3f})'
+            name = f'Grasp {idx+1} (score={grasp.score:.3f}{stable_str})'
         elif idx == 2:
             color = 'blue'
-            name = f'Grasp {idx+1} (score={grasp.score:.3f})'
+            name = f'Grasp {idx+1} (score={grasp.score:.3f}{stable_str})'
         else:
             # Color by score: interpolate between red (0) and green (1)
             r = int((1 - grasp.score) * 255)
             g = int(grasp.score * 255)
             color = f'rgb({r},{g},0)'
-            name = f'Grasp {idx+1} (score={grasp.score:.3f})'
+            name = f'Grasp {idx+1} (score={grasp.score:.3f}{stable_str})'
+        
+        # Build hover text with details
+        hover_text = (
+            f"<b>Grasp {idx+1}</b><br>"
+            f"Score: {grasp.score:.4f}<br>"
+        )
+        if stable_scores is not None and idx < len(stable_scores):
+            hover_text += f"Stable Score: {stable_scores[idx]:.4f}<br>"
+        hover_text += (
+            f"Width: {grasp.width*1000:.1f}mm<br>"
+            f"Depth: {grasp.depth*1000:.1f}mm<br>"
+            f"Position: ({grasp.translation[0]:.3f}, {grasp.translation[1]:.3f}, {grasp.translation[2]:.3f})"
+        )
         
         # Create mesh for each face
-        for face in faces:
+        for face_idx, face in enumerate(faces):
             verts = vertices[face]
             # Close the polygon
             verts = np.vstack([verts, verts[0:1]])
@@ -576,9 +683,29 @@ def create_interactive_visualization(pc, colors, gg, args, vis_dir, index):
                 x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
                 mode='lines',
                 line=dict(color=color, width=2),
-                name=name if face == faces[0] else None,
-                showlegend=(face == faces[0]),
-                hoverinfo='name' if face == faces[0] else 'skip'
+                name=name if face_idx == 0 else None,
+                showlegend=(face_idx == 0),
+                hoverinfo='text' if face_idx == 0 else 'skip',
+                hovertext=hover_text if face_idx == 0 else None
+            ))
+    
+    # Add COG markers if available
+    if cogs is not None and len(cogs) > 0:
+        cog_colors = ['cyan', 'magenta', 'yellow', 'orange', 'purple', 'pink', 'lime', 'coral']
+        for i, cog_data in enumerate(cogs):
+            cog = cog_data['cog']
+            obj_idx = cog_data['obj_idx']
+            color = cog_colors[i % len(cog_colors)]
+            
+            # Add a large marker for the COG
+            fig.add_trace(go.Scatter3d(
+                x=[cog[0]], y=[cog[1]], z=[cog[2]],
+                mode='markers',
+                marker=dict(size=12, color=color, symbol='diamond', 
+                           line=dict(color='black', width=2)),
+                name=f'COG obj_{obj_idx}',
+                hoverinfo='name+text',
+                hovertext=f'Object {obj_idx} COG<br>({cog[0]:.3f}, {cog[1]:.3f}, {cog[2]:.3f})'
             ))
     
     # Update layout with inverted Z-axis to match camera coordinate convention
@@ -648,7 +775,7 @@ def main():
     
     # Run inference
     print("\n[2/3] Running inference...")
-    grasp_group = run_inference(data_dict, args)
+    grasp_group, stable_scores = run_inference(data_dict, args)
     
     # Visualize
     print("\n[3/3] Creating visualization...")
@@ -665,7 +792,9 @@ def main():
         grasp_group,
         args,
         scene_id,
-        index
+        index,
+        cogs=data_dict.get('cogs', None),
+        stable_scores=stable_scores
     )
     
     print("\n" + "=" * 60)

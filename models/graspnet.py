@@ -240,12 +240,11 @@ def pred_decode(end_points, use_stable_score=False):
             # Expand stable score to match angle*depth shape 
             stable_expanded = stable_score.unsqueeze(-1).expand(-1, -1, NUM_DEPTH) 
             stable_expanded = stable_expanded.reshape(M, NUM_ANGLE*NUM_DEPTH)
-            # Reweight
-            grasp_score_reweighted = grasp_score * (1.0 - stable_expanded)
-            # Find best grasp using reweighted scores
-            _, grasp_score_inds = torch.max(grasp_score_reweighted, -1)  
-            # Get the original score for the selected grasp (for output compatibility)
-            grasp_score_final = torch.gather(grasp_score, 1, grasp_score_inds.view(-1, 1))
+            # Reweight: grasp_score * (1 - stable_score) as per AnyGrasp paper
+            grasp_score_reweighted = grasp_score *(1.0 - stable_expanded)
+            # Find best grasp using reweighted scores AND use reweighted score for final ranking
+            grasp_score_final, grasp_score_inds = torch.max(grasp_score_reweighted, -1)
+            grasp_score_final = grasp_score_final.view(-1, 1)
         else:
             grasp_score_final, grasp_score_inds = torch.max(grasp_score, -1)
             grasp_score_final = grasp_score_final.view(-1, 1)

@@ -153,11 +153,15 @@ class GraspNetDataset(Dataset):
         elif split == 'test':
             self.sceneIds = list(range(110, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(110, 111))  # scene_0110 for test_seen evaluation
+            self.sceneIds = list(range(110, 130))  # scenes 110-129 for test_seen evaluation
+        elif split == 'test_seen_single':
+            self.sceneIds = list(range(110, 111))  # Just scene_0110
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':
             self.sceneIds = list(range(160, 190))
+        elif split == 'test_novel_single':
+            self.sceneIds = list(range(180, 181))  # Just scene_0180
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
