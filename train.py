@@ -376,6 +376,9 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     net.train()
     batch_interval = 20
     
+    # Zero gradients at the start of each epoch to ensure clean state
+    optimizer.zero_grad()
+    
     # Only show progress bar on main process to avoid duplicates
     data_iter = tqdm(enumerate(train_dataloader), desc='Training', 
                      disable=not is_main_process(), total=len(train_dataloader))
@@ -424,8 +427,7 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
                     stat_dict[key] = 0
                 if key not in epoch_stat_dict:
                     epoch_stat_dict[key] = 0
-                # Multiply back by accumulation_steps to get actual loss value
-                loss_value = end_points[key].item() if 'loss' not in key else end_points[key].item() * cfgs.accumulation_steps
+                loss_value = end_points[key].item()
                 stat_dict[key] += loss_value
                 epoch_stat_dict[key] += loss_value
 
@@ -437,6 +439,15 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
                                             (EPOCH_CNT * len(train_dataloader) + batch_idx) * cfgs.batch_size)
                 log_string('mean %s: %f' % (key, stat_dict[key] / batch_interval))
                 stat_dict[key] = 0
+    
+    # Handle remaining gradients if num_batches not divisible by accumulation_steps
+    if len(train_dataloader) % cfgs.accumulation_steps != 0:
+        if cfgs.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), cfgs.grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
     
     # Log epoch-level averages to TensorBoard (only main process)
     num_batches = len(train_dataloader)

@@ -108,10 +108,48 @@ class LazyGraspLabels:
         return result
 
 
+def sample_floor_aware(cloud, trans, num_points, floor_height=0.01, floor_keep_ratio=0.01):
+    """
+    Sample points with reduced probability for floor points.
+    
+    Args:
+        cloud: (N, 3) point cloud in camera coordinates
+        trans: (4, 4) transformation matrix to table coordinates
+        num_points: number of points to sample
+        floor_height: maximum height to consider as floor (meters)
+        floor_keep_ratio: sampling weight for floor points relative to object points
+        
+    Returns:
+        idxs: indices of sampled points
+    """
+    n = len(cloud)
+    
+    # Transform to table coordinates to get height
+    ones = np.ones((n, 1))
+    cloud_homo = np.hstack([cloud, ones])  # (N, 4)
+    cloud_table = (trans @ cloud_homo.T).T[:, :3]  # (N, 3)
+    heights = cloud_table[:, 2]  # Z is height in table coords
+    
+    # Create sampling weights: floor points get reduced probability
+    floor_mask = heights < floor_height
+    weights = np.ones(n)
+    weights[floor_mask] = floor_keep_ratio
+    probs = weights / weights.sum()
+    
+    if n >= num_points:
+        idxs = np.random.choice(n, num_points, replace=False, p=probs)
+    else:
+        idxs1 = np.arange(n)
+        idxs2 = np.random.choice(n, num_points - n, replace=True, p=probs)
+        idxs = np.concatenate([idxs1, idxs2], axis=0)
+    
+    return idxs
+
+
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
-                 enable_stable_score=False):
+                 enable_stable_score=False, floor_sampling=False):
         assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
@@ -123,7 +161,8 @@ class GraspNetDataset(Dataset):
         self.augment = augment
         self.load_label = load_label
         self.use_rgb = use_rgb  
-        self.enable_stable_score = enable_stable_score 
+        self.enable_stable_score = enable_stable_score
+        self.floor_sampling = floor_sampling 
         
         # Cache for stable score labels per object
         self._stable_labels_cache = {}
@@ -151,9 +190,9 @@ class GraspNetDataset(Dataset):
         elif split == 'val':
             self.sceneIds = list(range(109, 110))
         elif split == 'test':
-            self.sceneIds = list(range(110, 190))
+            self.sceneIds = list(range(100, 190))
         elif split == 'test_seen':
-            self.sceneIds = list(range(110, 130))  # scenes 110-129 for test_seen evaluation
+            self.sceneIds = list(range(100, 130))  # scenes 110-129 for test_seen evaluation
         elif split == 'test_seen_single':
             self.sceneIds = list(range(110, 111))  # Just scene_0110
         elif split == 'test_similar':
@@ -322,13 +361,18 @@ class GraspNetDataset(Dataset):
 
         if return_raw_cloud:
             return cloud_masked
-        # sample points random
-        if len(cloud_masked) >= self.num_points:
-            idxs = np.random.choice(len(cloud_masked), self.num_points, replace=False)
+        # sample points
+        if self.floor_sampling and self.remove_outlier:
+            # Use floor-aware sampling (trans is available when remove_outlier=True)
+            idxs = sample_floor_aware(cloud_masked, trans, self.num_points)
         else:
-            idxs1 = np.arange(len(cloud_masked))
-            idxs2 = np.random.choice(len(cloud_masked), self.num_points - len(cloud_masked), replace=True)
-            idxs = np.concatenate([idxs1, idxs2], axis=0)
+            # Random sampling
+            if len(cloud_masked) >= self.num_points:
+                idxs = np.random.choice(len(cloud_masked), self.num_points, replace=False)
+            else:
+                idxs1 = np.arange(len(cloud_masked))
+                idxs2 = np.random.choice(len(cloud_masked), self.num_points - len(cloud_masked), replace=True)
+                idxs = np.concatenate([idxs1, idxs2], axis=0)
         cloud_sampled = cloud_masked[idxs]
         
         if self.use_rgb:
@@ -390,12 +434,17 @@ class GraspNetDataset(Dataset):
             rgb_masked = rgb[mask]  # (N, 3) uint8
 
         # sample points
-        if len(cloud_masked) >= self.num_points:
-            idxs = np.random.choice(len(cloud_masked), self.num_points, replace=False)
+        if self.floor_sampling and self.remove_outlier:
+            # Use floor-aware sampling (trans is available when remove_outlier=True)
+            idxs = sample_floor_aware(cloud_masked, trans, self.num_points)
         else:
-            idxs1 = np.arange(len(cloud_masked))
-            idxs2 = np.random.choice(len(cloud_masked), self.num_points - len(cloud_masked), replace=True)
-            idxs = np.concatenate([idxs1, idxs2], axis=0)
+            # Random sampling
+            if len(cloud_masked) >= self.num_points:
+                idxs = np.random.choice(len(cloud_masked), self.num_points, replace=False)
+            else:
+                idxs1 = np.arange(len(cloud_masked))
+                idxs2 = np.random.choice(len(cloud_masked), self.num_points - len(cloud_masked), replace=True)
+                idxs = np.concatenate([idxs1, idxs2], axis=0)
         cloud_sampled = cloud_masked[idxs]
         seg_sampled = seg_masked[idxs]
         graspness_sampled = graspness[idxs]

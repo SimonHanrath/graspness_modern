@@ -162,6 +162,7 @@ class GraspNet(nn.Module):
             cur_seed_xyz = cur_seed_xyz.unsqueeze(0) # 1*Ns*3
             
             # Handle case where we have fewer graspable points than M_points
+            #print(f'Number of points above threshold: {Ns}')
             num_to_sample = min(Ns, self.M_points)
             
             if num_to_sample > 0:
