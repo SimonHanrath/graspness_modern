@@ -34,6 +34,26 @@ from dataset.graspnet_dataset import GraspNetDataset, spconv_collate_fn, load_gr
 
 from tqdm import tqdm
 
+
+def freeze_for_stable_finetune(net, log_fn=print):
+    """Freeze all parameters except the stable score head (conv_stable).
+    
+    Used when fine-tuning a pretrained model to add stable score prediction.
+    """
+    frozen_count = 0
+    trainable_count = 0
+    
+    for name, param in net.named_parameters():
+        if 'conv_stable' in name:
+            param.requires_grad = True
+            trainable_count += param.numel()
+        else:
+            param.requires_grad = False
+            frozen_count += param.numel()
+    
+    log_fn(f"Frozen {frozen_count:,} params, training {trainable_count:,} params (conv_stable only)")
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_root', default=None, required=True)
 parser.add_argument('--camera', default='kinect', help='Camera split [realsense/kinect]')
@@ -78,6 +98,8 @@ parser.add_argument('--cosine_lr', action='store_true', default=False,
                     help='Use cosine annealing LR schedule with warmup instead of exponential decay')
 parser.add_argument('--warmup_epochs', type=int, default=2,
                     help='Number of warmup epochs for cosine LR schedule [default: 2]')
+parser.add_argument('--finetune', action='store_true', default=False,
+                    help='Fine-tune mode: load weights but reset epoch to 0 and skip optimizer state. Use with --checkpoint_path to fine-tune a vanilla model with stable score.')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')
@@ -148,7 +170,8 @@ LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE = setup_distributed()
 
 
 EPOCH_CNT = 0
-CHECKPOINT_PATH = cfgs.checkpoint_path if cfgs.resume else None
+# Load checkpoint if resuming OR fine-tuning
+CHECKPOINT_PATH = cfgs.checkpoint_path if (cfgs.resume or cfgs.finetune) else None
 if not os.path.exists(cfgs.log_dir) and is_main_process():
     os.makedirs(cfgs.log_dir)
 
@@ -322,13 +345,21 @@ def create_model_and_optimizer():
         # Remove 'module.' prefix if loading from DDP checkpoint into non-DDP model
         if not is_distributed() and any(k.startswith('module.') for k in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        # Add 'module.' prefix if loading non-DDP checkpoint into DDP model (handled after DDP wrap)
+        
         net.load_state_dict(state_dict, strict=False)
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'scaler_state_dict' in checkpoint and cfgs.use_amp:
-            scaler.load_state_dict(checkpoint['scaler_state_dict'])
-        start_epoch = checkpoint['epoch']
-        log_string("-> loaded checkpoint %s (epoch: %d)" % (CHECKPOINT_PATH, start_epoch))
+        
+        # In finetune mode, skip optimizer state and reset epoch
+        if cfgs.finetune:
+            log_string("-> FINETUNE mode: loaded weights from %s, resetting epoch to 0" % CHECKPOINT_PATH)
+            # Freeze all except stable score head when fine-tuning for stable score
+            if cfgs.enable_stable_score:
+                freeze_for_stable_finetune(net, log_string)
+        else:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scaler_state_dict' in checkpoint and cfgs.use_amp:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            start_epoch = checkpoint['epoch']
+            log_string("-> loaded checkpoint %s (epoch: %d)" % (CHECKPOINT_PATH, start_epoch))
     
     # Wrap model in DDP if running distributed
     if is_distributed():

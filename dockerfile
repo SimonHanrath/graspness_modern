@@ -50,4 +50,8 @@ RUN pip install --no-cache-dir "spconv-cu121>=2.3,<2.5"
 # Prepare cache dir with open permissions
 RUN mkdir -p /opt/cache && chmod -R 777 /opt/cache
 
+# Install graspnetAPI (copy source and install so it persists in image)
+COPY graspnetAPI /tmp/graspnetAPI
+RUN pip install --no-cache-dir /tmp/graspnetAPI && rm -rf /tmp/graspnetAPI
+
 WORKDIR /workspace

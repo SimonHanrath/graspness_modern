@@ -37,7 +37,9 @@ parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
 parser.add_argument('--enable_flash', action='store_true', default=False,
                     help='Enable flash attention in PTv3 backbone (requires flash_attn package)')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
-                    help='Enable stable score prediction to reweight grasps during ranking [default: False]')
+                    help='Enable stable score prediction (model architecture) [default: False]')
+parser.add_argument('--no_stable_reweight', action='store_true', default=False,
+                    help='Disable stable score reweighting at inference (use raw grasp scores). Use with --enable_stable_score to compare with/without reweighting.')
 parser.add_argument('--split', type=str, default='test_seen',
                     choices=['test', 'test_seen', 'test_seen_single', 'test_similar', 'test_novel', 'test_novel_single'],
                     help='Dataset split to evaluate on [default: test_seen]')
@@ -80,8 +82,13 @@ def inference():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
     
+    # Determine if we should use stable score reweighting at inference
+    use_stable_reweight = cfgs.enable_stable_score and not cfgs.no_stable_reweight
     if cfgs.enable_stable_score:
-        print("Stable score enabled: grasps will be reweighted by (1 - stable_score) during ranking")
+        if use_stable_reweight:
+            print("Stable score enabled: grasps will be reweighted by (1 - stable_score) during ranking")
+        else:
+            print("Stable score model loaded, but reweighting DISABLED (using raw grasp scores)")
     # Load checkpoint
     checkpoint = torch.load(cfgs.checkpoint_path)
     net.load_state_dict(checkpoint['model_state_dict'], strict=False)
@@ -105,7 +112,7 @@ def inference():
         # Forward pass
         with torch.no_grad():
             end_points = net(batch_data)
-            grasp_preds = pred_decode(end_points, use_stable_score=cfgs.enable_stable_score)
+            grasp_preds = pred_decode(end_points, use_stable_score=use_stable_reweight)
 
         # Debug output for first batch
         if batch_idx == 0:
@@ -194,8 +201,16 @@ def evaluate(dump_dir):
     
     ge = GraspNetEval(root=cfgs.dataset_root, camera=cfgs.camera, split=eval_split)
     
-    # Call appropriate eval method based on split
-    if eval_split == 'test_seen':
+    # For single scene splits, evaluate only that scene directly
+    if cfgs.split == 'test_seen_single':
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[110], dump_folder=dump_dir, proc=1))
+        ap = np.mean(res)
+        print('\nEvaluation Result:\n----------\n{}, AP Seen (scene 110 only)={}'.format(cfgs.camera, ap))
+    elif cfgs.split == 'test_novel_single':
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[180], dump_folder=dump_dir, proc=1))
+        ap = np.mean(res)
+        print('\nEvaluation Result:\n----------\n{}, AP Novel (scene 180 only)={}'.format(cfgs.camera, ap))
+    elif eval_split == 'test_seen':
         res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6)
     elif eval_split == 'test_similar':
         res, ap = ge.eval_similar(dump_folder=dump_dir, proc=6)

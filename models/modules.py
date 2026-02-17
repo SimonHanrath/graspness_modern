@@ -105,40 +105,30 @@ class SWADNet(nn.Module): # Grasp pose predicition head
         self.enable_stable_score = enable_stable_score
 
         self.conv1 = nn.Conv1d(256, 256, 1)  # input feat dim need to be consistent with CloudCrop module
+        self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth, 1)  # scores + widths (96 outputs)
         
-        # AnyGrasp-style: stable scores are predicted from the SAME layer as scores/widths
-        # Output: 2*num_angle*num_depth (scores + widths) + num_angle (stable scores)
-        # This avoids gradient competition from a separate branch
+        # Separate stable score head - can be frozen/unfrozen independently
         if self.enable_stable_score:
-            # Joint prediction: scores, widths, and stable scores from one layer
-            self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth + num_angle, 1)
-        else:
-            self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth, 1)
+            # Simple linear projection for stable scores (no extra hidden layers)
+            # Init with small weights so stable_score starts near 0.5 (neutral)
+            self.conv_stable = nn.Conv1d(256, num_angle, 1)
+            nn.init.zeros_(self.conv_stable.weight)
+            nn.init.zeros_(self.conv_stable.bias)
 
     def forward(self, vp_features, end_points):
         B, _, num_seed = vp_features.size()
         vp_features_relu = F.relu(self.conv1(vp_features))
         vp_out = self.conv_swad(vp_features_relu)
+        vp_out = vp_out.view(B, 2, self.num_angle, self.num_depth, num_seed)
+        vp_out = vp_out.permute(0, 1, 4, 2, 3)
+
+        end_points['grasp_score_pred'] = vp_out[:, 0]  # B * num_seed * num_angle * num_depth
+        end_points['grasp_width_pred'] = vp_out[:, 1]
         
         if self.enable_stable_score:
-            # Split outputs: first 2*num_angle*num_depth for scores/widths, last num_angle for stable
-            swad_out = vp_out[:, :2*self.num_angle*self.num_depth, :]
-            stable_raw = vp_out[:, 2*self.num_angle*self.num_depth:, :]  # (B, num_angle, num_seed)
-            
-            swad_out = swad_out.view(B, 2, self.num_angle, self.num_depth, num_seed)
-            swad_out = swad_out.permute(0, 1, 4, 2, 3)
-            
-            end_points['grasp_score_pred'] = swad_out[:, 0]  # B * num_seed * num_angle * num_depth
-            end_points['grasp_width_pred'] = swad_out[:, 1]
-            
-            # Stable score: shared across depths, one per angle
+            stable_raw = self.conv_stable(vp_features_relu)  # (B, num_angle, num_seed)
             stable_raw = stable_raw.permute(0, 2, 1)  # (B, num_seed, num_angle)
             stable_score = torch.sigmoid(stable_raw)  # Normalize to [0, 1]
             end_points['grasp_stable_pred'] = stable_score  # (B, M, 12)
-        else:
-            vp_out = vp_out.view(B, 2, self.num_angle, self.num_depth, num_seed)
-            vp_out = vp_out.permute(0, 1, 4, 2, 3)
-            end_points['grasp_score_pred'] = vp_out[:, 0]  # B * num_seed * num_angle * num_depth
-            end_points['grasp_width_pred'] = vp_out[:, 1]
         
         return end_points
