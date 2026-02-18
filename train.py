@@ -57,6 +57,7 @@ def freeze_for_stable_finetune(net, log_fn=print):
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_root', default=None, required=True)
 parser.add_argument('--camera', default='kinect', help='Camera split [realsense/kinect]')
+parser.add_argument('--train_split', default='train', help='Training split [train/train_all]')
 parser.add_argument('--checkpoint_path', help='Model checkpoint path', default=None)
 parser.add_argument('--model_name', type=str, default=None)
 parser.add_argument('--log_dir', default='logs/log')
@@ -213,11 +214,11 @@ def create_dataloaders():
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
     use_rgb = (cfgs.backbone in ['transformer_pretrained', 'resunet_rgb'])
-    train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='train',
+    train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.train_split,
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
                                     enable_stable_score=cfgs.enable_stable_score)
-    log_string('train dataset length: ' + str(len(train_dataset)))
+    log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
 
 
     # For overfitting test, use only 1 sample repeated 256 times

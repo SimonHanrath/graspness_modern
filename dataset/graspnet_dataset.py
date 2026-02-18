@@ -187,6 +187,8 @@ class GraspNetDataset(Dataset):
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
+        elif split == 'train_all':
+            self.sceneIds = list(range(0, 190))  # All 190 scenes for training
         elif split == 'val':
             self.sceneIds = list(range(109, 110))
         elif split == 'test':
@@ -194,7 +196,7 @@ class GraspNetDataset(Dataset):
         elif split == 'test_seen':
             self.sceneIds = list(range(100, 130))  # scenes 110-129 for test_seen evaluation
         elif split == 'test_seen_single':
-            self.sceneIds = list(range(110, 111))  # Just scene_0110
+            self.sceneIds = list(range(181, 182))  # Just scene_0181
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':

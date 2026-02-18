@@ -91,7 +91,24 @@ def inference():
             print("Stable score model loaded, but reweighting DISABLED (using raw grasp scores)")
     # Load checkpoint
     checkpoint = torch.load(cfgs.checkpoint_path)
-    net.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    state_dict = checkpoint['model_state_dict']
+    
+    # Handle old checkpoint format: bundled stable scores in conv_swad (108 outputs)
+    # vs new format: separate conv_stable layer (conv_swad=96, conv_stable=12)
+    if 'swad.conv_swad.weight' in state_dict:
+        old_weight = state_dict['swad.conv_swad.weight']
+        old_bias = state_dict['swad.conv_swad.bias']
+        if old_weight.shape[0] == 108 and cfgs.enable_stable_score:
+            print("Converting old checkpoint (bundled 108 outputs) to new format (96 + 12 separate)...")
+            # Split: first 96 for scores/widths, last 12 for stable
+            state_dict['swad.conv_swad.weight'] = old_weight[:96]
+            state_dict['swad.conv_swad.bias'] = old_bias[:96]
+            state_dict['swad.conv_stable.weight'] = old_weight[96:]
+            state_dict['swad.conv_stable.bias'] = old_bias[96:]
+            print("  Converted swad.conv_swad: [108, 256, 1] -> [96, 256, 1]")
+            print("  Created swad.conv_stable: [12, 256, 1]")
+    
+    net.load_state_dict(state_dict, strict=False)
     start_epoch = checkpoint['epoch']
     print("-> loaded checkpoint %s (epoch: %d)" % (cfgs.checkpoint_path, start_epoch))
     print("Note: Missing keys (buffers) will use default values from model initialization")
@@ -203,9 +220,9 @@ def evaluate(dump_dir):
     
     # For single scene splits, evaluate only that scene directly
     if cfgs.split == 'test_seen_single':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[110], dump_folder=dump_dir, proc=1))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[181], dump_folder=dump_dir, proc=1))
         ap = np.mean(res)
-        print('\nEvaluation Result:\n----------\n{}, AP Seen (scene 110 only)={}'.format(cfgs.camera, ap))
+        print('\nEvaluation Result:\n----------\n{}, AP Seen (scene 181 only)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_novel_single':
         res = np.array(ge.parallel_eval_scenes(scene_ids=[180], dump_folder=dump_dir, proc=1))
         ap = np.mean(res)
