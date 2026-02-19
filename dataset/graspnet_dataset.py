@@ -149,7 +149,7 @@ def sample_floor_aware(cloud, trans, num_points, floor_height=0.01, floor_keep_r
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
-                 enable_stable_score=False, floor_sampling=False):
+                 enable_stable_score=False, floor_sampling=False, max_views=256):
         assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
@@ -197,12 +197,18 @@ class GraspNetDataset(Dataset):
             self.sceneIds = list(range(100, 130))  # scenes 110-129 for test_seen evaluation
         elif split == 'test_seen_single':
             self.sceneIds = list(range(181, 182))  # Just scene_0181
+        elif split == 'test_seen_mini':
+            self.sceneIds = [101, 115, 128]  # Mini test_seen subset
         elif split == 'test_similar':
             self.sceneIds = list(range(130, 160))
+        elif split == 'test_similar_mini':
+            self.sceneIds = [131, 145, 158]  # Mini test_similar subset
         elif split == 'test_novel':
             self.sceneIds = list(range(160, 190))
         elif split == 'test_novel_single':
             self.sceneIds = list(range(180, 181))  # Just scene_0180
+        elif split == 'test_novel_mini':
+            self.sceneIds = [161, 175, 188]  # Mini test_novel subset
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
@@ -213,7 +219,7 @@ class GraspNetDataset(Dataset):
         self.frameid = []
         self.graspnesspath = []
         for x in tqdm(self.sceneIds, desc='Loading data paths...'):
-            for img_num in range(256):
+            for img_num in range(max_views):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))

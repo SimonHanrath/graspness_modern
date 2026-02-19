@@ -41,7 +41,7 @@ parser.add_argument('--enable_stable_score', action='store_true', default=False,
 parser.add_argument('--no_stable_reweight', action='store_true', default=False,
                     help='Disable stable score reweighting at inference (use raw grasp scores). Use with --enable_stable_score to compare with/without reweighting.')
 parser.add_argument('--split', type=str, default='test_seen',
-                    choices=['test', 'test_seen', 'test_seen_single', 'test_similar', 'test_novel', 'test_novel_single'],
+                    choices=['test', 'test_seen', 'test_seen_single', 'test_seen_mini', 'test_similar', 'test_similar_mini', 'test_novel', 'test_novel_single', 'test_novel_mini'],
                     help='Dataset split to evaluate on [default: test_seen]')
 cfgs = parser.parse_args()
 
@@ -211,10 +211,12 @@ def inference():
 def evaluate(dump_dir):
     # Map split variants to their base eval split
     eval_split = cfgs.split
-    if cfgs.split in ['test_seen_single']:
+    if cfgs.split in ['test_seen_single', 'test_seen_mini']:
         eval_split = 'test_seen'
-    elif cfgs.split in ['test_novel_single']:
+    elif cfgs.split in ['test_novel_single', 'test_novel_mini']:
         eval_split = 'test_novel'
+    elif cfgs.split in ['test_similar_mini']:
+        eval_split = 'test_similar'
     
     ge = GraspNetEval(root=cfgs.dataset_root, camera=cfgs.camera, split=eval_split)
     
@@ -223,10 +225,22 @@ def evaluate(dump_dir):
         res = np.array(ge.parallel_eval_scenes(scene_ids=[181], dump_folder=dump_dir, proc=1))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Seen (scene 181 only)={}'.format(cfgs.camera, ap))
+    elif cfgs.split == 'test_seen_mini':
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[101, 115, 128], dump_folder=dump_dir, proc=3))
+        ap = np.mean(res)
+        print('\nEvaluation Result:\n----------\n{}, AP Seen Mini (scenes 101,115,128)={}'.format(cfgs.camera, ap))
+    elif cfgs.split == 'test_similar_mini':
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[131, 145, 158], dump_folder=dump_dir, proc=3))
+        ap = np.mean(res)
+        print('\nEvaluation Result:\n----------\n{}, AP Similar Mini (scenes 131,145,158)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_novel_single':
         res = np.array(ge.parallel_eval_scenes(scene_ids=[180], dump_folder=dump_dir, proc=1))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Novel (scene 180 only)={}'.format(cfgs.camera, ap))
+    elif cfgs.split == 'test_novel_mini':
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[161, 175, 188], dump_folder=dump_dir, proc=3))
+        ap = np.mean(res)
+        print('\nEvaluation Result:\n----------\n{}, AP Novel Mini (scenes 161,175,188)={}'.format(cfgs.camera, ap))
     elif eval_split == 'test_seen':
         res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6)
     elif eval_split == 'test_similar':

@@ -135,6 +135,13 @@ class GraspNet(nn.Module):
         # This is to mimic the approach from MinkowskiEngine
         seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
 
+        # Store backbone output statistics for debugging
+        end_points['backbone_feat_mean'] = seed_features.mean()
+        end_points['backbone_feat_std'] = seed_features.std()
+        end_points['backbone_feat_min'] = seed_features.min()
+        end_points['backbone_feat_max'] = seed_features.max()
+        end_points['backbone_feat_abs_mean'] = seed_features.abs().mean()
+
         end_points = self.graspable(seed_features, end_points)
         seed_features_flipped = seed_features.transpose(1, 2)  # B*Ns*feat_dim
         objectness_score = end_points['objectness_score']

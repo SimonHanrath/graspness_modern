@@ -93,6 +93,8 @@ parser.add_argument('--backbone_lr_scale', type=float, default=None,
                     help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
+parser.add_argument('--max_views', type=int, default=256,
+                    help='Max views per scene to use for training (1-256) [default: 256]')
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
 parser.add_argument('--cosine_lr', action='store_true', default=False,
@@ -217,7 +219,7 @@ def create_dataloaders():
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.train_split,
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
-                                    enable_stable_score=cfgs.enable_stable_score)
+                                    enable_stable_score=cfgs.enable_stable_score, max_views=cfgs.max_views)
     log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
 
 
@@ -434,6 +436,28 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
                                         lambda_stable=cfgs.lambda_stable)
             # Scale loss for gradient accumulation
             loss = loss / cfgs.accumulation_steps
+        
+        # Debug: Print backbone and graspness statistics for first batch of first epoch
+        if batch_idx == 0 and EPOCH_CNT == 0 and is_main_process():
+            print("\n" + "="*80)
+            print("DEBUG: Backbone & Graspness Statistics (Epoch 0, Batch 0)")
+            print("="*80)
+            print(f"Backbone features:")
+            print(f"  mean={end_points['backbone_feat_mean'].item():.6f}")
+            print(f"  std={end_points['backbone_feat_std'].item():.6f}")
+            print(f"  min={end_points['backbone_feat_min'].item():.6f}")
+            print(f"  max={end_points['backbone_feat_max'].item():.6f}")
+            print(f"  abs_mean={end_points['backbone_feat_abs_mean'].item():.6f}")
+            graspness = end_points['graspness_score']
+            print(f"\nGraspness scores:")
+            print(f"  mean={graspness.mean().item():.6f}")
+            print(f"  std={graspness.std().item():.6f}")
+            print(f"  min={graspness.min().item():.6f}")
+            print(f"  max={graspness.max().item():.6f}")
+            print(f"  >0.01: {(graspness > 0.01).sum().item()} / {graspness.numel()} ({100*(graspness > 0.01).float().mean().item():.2f}%)")
+            print(f"  >0.1:  {(graspness > 0.1).sum().item()} / {graspness.numel()} ({100*(graspness > 0.1).float().mean().item():.2f}%)")
+            print(f"\nGraspable count (after threshold): {end_points['graspable_count_stage1'].item():.1f}")
+            print("="*80 + "\n")
         
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()
