@@ -93,8 +93,10 @@ parser.add_argument('--backbone_lr_scale', type=float, default=None,
                     help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
-parser.add_argument('--max_views', type=int, default=256,
-                    help='Max views per scene to use for training (1-256) [default: 256]')
+parser.add_argument('--view_start', type=int, default=0,
+                    help='Starting view index (inclusive) for each scene [default: 0]')
+parser.add_argument('--view_end', type=int, default=256,
+                    help='Ending view index (exclusive) for each scene [default: 256]')
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
 parser.add_argument('--cosine_lr', action='store_true', default=False,
@@ -219,7 +221,7 @@ def create_dataloaders():
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.train_split,
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
-                                    enable_stable_score=cfgs.enable_stable_score, max_views=cfgs.max_views)
+                                    enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end)
     log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
 
 
