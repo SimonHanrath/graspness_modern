@@ -149,7 +149,7 @@ def sample_floor_aware(cloud, trans, num_points, floor_height=0.01, floor_keep_r
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
-                 enable_stable_score=False, floor_sampling=False, max_views=256):
+                 enable_stable_score=False, floor_sampling=False, view_start=0, view_end=256):
         assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
@@ -219,7 +219,7 @@ class GraspNetDataset(Dataset):
         self.frameid = []
         self.graspnesspath = []
         for x in tqdm(self.sceneIds, desc='Loading data paths...'):
-            for img_num in range(max_views):
+            for img_num in range(view_start, view_end):
                 self.depthpath.append(os.path.join(root, 'scenes', x, camera, 'depth', str(img_num).zfill(4) + '.png'))
                 self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))
