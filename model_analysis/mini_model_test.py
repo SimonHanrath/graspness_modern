@@ -17,7 +17,8 @@ import os
 import re
 import sys
 import argparse
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 # Configuration
 DATASET_ROOT = "/datasets/graspnet"
@@ -74,7 +75,7 @@ def parse_ap_from_output(output):
     return None
 
 
-def run_test(args, test_set):
+def run_test(args, test_set, test_idx=1, total_tests=1):
     """Run a single test and return the result."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
@@ -106,23 +107,30 @@ def run_test(args, test_set):
     if args.no_collision:
         cmd.extend(["--collision_thresh", "0"])
     
-    print(f"\n{'='*80}")
-    print(f"Running test:")
-    print(f"  Model: {model_name}")
-    print(f"  Test set: {test_set}")
-    print(f"  Command: {' '.join(cmd)}")
-    print(f"{'='*80}\n")
+    print(f"\n{'='*80}", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting test {test_idx}/{total_tests}", flush=True)
+    print(f"  Model: {model_name}", flush=True)
+    print(f"  Test set: {test_set}", flush=True)
+    print(f"  Command: {' '.join(cmd)}", flush=True)
+    print(f"{'='*80}\n", flush=True)
     
     try:
-        result = subprocess.run(
+        # Use Popen for real-time streaming output (so you can see progress via `less` on cluster)
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
             cwd=project_root
         )
         
-        full_output = result.stdout + result.stderr
-        print(full_output)
+        full_output = ""
+        for line in process.stdout:
+            print(line, end='', flush=True)
+            full_output += line
+        
+        return_code = process.wait()
         
         ap = parse_ap_from_output(full_output)
         
@@ -130,13 +138,13 @@ def run_test(args, test_set):
             return {
                 "status": "completed",
                 "ap": ap,
-                "return_code": result.returncode
+                "return_code": return_code
             }
         else:
             return {
                 "status": "error",
                 "error": "Could not parse AP value from output",
-                "return_code": result.returncode,
+                "return_code": return_code,
                 "output": full_output[-2000:]
             }
     except Exception as e:
@@ -151,13 +159,19 @@ def main():
     
     model_name = args.model_name or os.path.basename(os.path.dirname(args.checkpoint_path))
     
-    print("="*80)
-    print(f"Single Model Test: {model_name}")
-    print("="*80)
-    print(f"Checkpoint: {args.checkpoint_path}")
-    print(f"Test sets: {TEST_SETS}")
-    print(f"Total tests: {len(TEST_SETS)}")
-    print()
+    print("="*80, flush=True)
+    print(f"Single Model Test: {model_name}", flush=True)
+    print("="*80, flush=True)
+    print(f"Checkpoint: {args.checkpoint_path}", flush=True)
+    print(f"Backbone: {args.backbone}", flush=True)
+    print(f"Camera: {args.camera}", flush=True)
+    print(f"Num points: {args.num_point}", flush=True)
+    print(f"Collision detection: {'OFF' if args.no_collision else 'ON'}", flush=True)
+    print(f"Eval mode: {'infer only' if args.infer_only else 'infer + eval'}", flush=True)
+    print(f"Test sets: {TEST_SETS}", flush=True)
+    print(f"Total tests: {len(TEST_SETS)}", flush=True)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(flush=True)
     
     # Initialize results
     data = {
@@ -174,56 +188,83 @@ def main():
     
     completed = 0
     failed = 0
+    total_tests = len(TEST_SETS)
+    test_times = []
+    overall_start = time.time()
     
-    for test_set in TEST_SETS:
-        result = run_test(args, test_set)
+    for idx, test_set in enumerate(TEST_SETS, 1):
+        test_start = time.time()
+        result = run_test(args, test_set, test_idx=idx, total_tests=total_tests)
+        test_elapsed = time.time() - test_start
+        test_times.append(test_elapsed)
         
         test_record = {
             "test_set": test_set,
             "timestamp": datetime.now().isoformat(),
+            "duration_seconds": round(test_elapsed, 1),
             **result
         }
         data["results"].append(test_record)
         
         if result["status"] == "completed":
-            print(f"\n*** Test completed: AP = {result['ap']:.6f} ***\n")
+            print(f"\n*** [{datetime.now().strftime('%H:%M:%S')}] Test {idx}/{total_tests} completed: {test_set} -> AP = {result['ap']:.6f} (took {timedelta(seconds=int(test_elapsed))}) ***", flush=True)
             completed += 1
         else:
-            print(f"\n*** Test failed: {result.get('error', 'Unknown error')} ***\n")
+            print(f"\n*** [{datetime.now().strftime('%H:%M:%S')}] Test {idx}/{total_tests} FAILED: {test_set} -> {result.get('error', 'Unknown error')} (took {timedelta(seconds=int(test_elapsed))}) ***", flush=True)
             failed += 1
+        
+        # Print progress & ETA
+        remaining = total_tests - idx
+        if remaining > 0:
+            avg_time = sum(test_times) / len(test_times)
+            eta = timedelta(seconds=int(avg_time * remaining))
+            print(f"    Progress: {idx}/{total_tests} done | ETA for remaining {remaining} test(s): ~{eta}", flush=True)
+        
+        # Print intermediate results so far
+        print(f"\n    --- Results so far ---", flush=True)
+        for r in data["results"]:
+            if r["status"] == "completed":
+                print(f"    {r['test_set']:<20} AP={r['ap']:.6f}  ({r['duration_seconds']}s)", flush=True)
+            else:
+                print(f"    {r['test_set']:<20} FAILED", flush=True)
+        print(flush=True)
     
     # Save results
     model_name_safe = model_name.replace(' ', '_').replace('/', '_')
     output_file = args.output_file or f"single_model_results_{model_name_safe}.json"
     with open(output_file, 'w') as f:
         json.dump(data, f, indent=2)
-    print(f"\nResults saved to: {output_file}")
+    total_elapsed = time.time() - overall_start
+    print(f"\nResults saved to: {output_file}", flush=True)
     
     # Print summary
-    print("\n" + "="*80)
-    print("TEST COMPLETE")
-    print("="*80)
-    print(f"Model: {model_name}")
-    print(f"Completed: {completed}")
-    print(f"Failed: {failed}")
+    print("\n" + "="*80, flush=True)
+    print("TEST COMPLETE", flush=True)
+    print("="*80, flush=True)
+    print(f"Model: {model_name}", flush=True)
+    print(f"Completed: {completed}", flush=True)
+    print(f"Failed: {failed}", flush=True)
+    print(f"Total time: {timedelta(seconds=int(total_elapsed))}", flush=True)
+    print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     
-    print("\n" + "="*80)
-    print("RESULTS SUMMARY")
-    print("="*80)
-    print(f"{'Test Set':<25} {'AP':<12}")
-    print("-"*40)
+    print("\n" + "="*80, flush=True)
+    print("RESULTS SUMMARY", flush=True)
+    print("="*80, flush=True)
+    print(f"{'Test Set':<25} {'AP':<12} {'Time':<12}", flush=True)
+    print("-"*50, flush=True)
     
     for r in data["results"]:
+        dur = f"{r.get('duration_seconds', '?')}s"
         if r["status"] == "completed":
-            print(f"{r['test_set']:<25} {r['ap']:<12.6f}")
+            print(f"{r['test_set']:<25} {r['ap']:<12.6f} {dur:<12}", flush=True)
         else:
-            print(f"{r['test_set']:<25} {'FAILED':<12}")
+            print(f"{r['test_set']:<25} {'FAILED':<12} {dur:<12}", flush=True)
     
     # Calculate average AP
     aps = [r['ap'] for r in data["results"] if r["status"] == "completed"]
     if aps:
-        print("-"*40)
-        print(f"{'Average':<25} {sum(aps)/len(aps):<12.6f}")
+        print("-"*50, flush=True)
+        print(f"{'Average':<25} {sum(aps)/len(aps):<12.6f}", flush=True)
 
 
 if __name__ == "__main__":
