@@ -7,7 +7,8 @@ Runs one model on the 3 mini test sets (seen, similar, novel) without stable sco
 Usage:
     python model_analysis/mini_model_test.py \
         --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch10.tar \
-        --model_name "Vanilla ResUNet"
+        --model_name "Vanilla ResUNet Realsese 10 epochs full test results" \
+        --backbone resunet
 """
 
 import subprocess
@@ -26,7 +27,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS = ["test_seen_mini", "test_similar_mini", "test_novel_mini"]
+TEST_SETS = ["test_seen", "test_similar", "test_novel"]
 
 
 def parse_args():
@@ -40,13 +41,18 @@ def parse_args():
     parser.add_argument('--camera', type=str, default=CAMERA,
                         help='Camera type')
     parser.add_argument('--backbone', type=str, default=BACKBONE,
-                        help='Backbone architecture')
+                        choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
+                        help='Backbone architecture [default: resunet]. Use resunet_rgb for ResUNet with RGB features.')
     parser.add_argument('--num_point', type=int, default=NUM_POINT,
                         help='Number of points to sample')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
                         help='Batch size')
     parser.add_argument('--output_file', type=str, default=None,
                         help='Output JSON file (default: single_model_results_<model_name>.json)')
+    parser.add_argument('--no_collision', action='store_true', default=False,
+                        help='Skip collision detection (faster but lower AP scores)')
+    parser.add_argument('--infer_only', action='store_true', default=False,
+                        help='Run inference only without evaluation (fastest)')
     return parser.parse_args()
 
 
@@ -86,11 +92,19 @@ def run_test(args, test_set):
         "--checkpoint_path", args.checkpoint_path,
         "--dump_dir", dump_dir,
         "--batch_size", str(args.batch_size),
-        "--infer", "--eval",
+        "--infer",
         "--backbone", args.backbone,
         "--num_point", str(args.num_point),
         "--split", test_set,
     ]
+    
+    # Add eval flag unless infer_only mode
+    if not args.infer_only:
+        cmd.append("--eval")
+    
+    # Skip collision detection if requested
+    if args.no_collision:
+        cmd.extend(["--collision_thresh", "0"])
     
     print(f"\n{'='*80}")
     print(f"Running test:")

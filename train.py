@@ -460,6 +460,23 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
             print(f"  >0.1:  {(graspness > 0.1).sum().item()} / {graspness.numel()} ({100*(graspness > 0.1).float().mean().item():.2f}%)")
             print(f"\nGraspable count (after threshold): {end_points['graspable_count_stage1'].item():.1f}")
             print("="*80 + "\n")
+            
+            # Save raw distribution data for later plotting
+            try:
+                graspness_np = graspness.detach().cpu().numpy().flatten()
+                data_path = os.path.join('tmp', 'init_distribution_data.npz')
+                np.savez(data_path,
+                    graspness_scores=graspness_np,
+                    backbone_mean=end_points['backbone_feat_mean'].item(),
+                    backbone_std=end_points['backbone_feat_std'].item(),
+                    backbone_min=end_points['backbone_feat_min'].item(),
+                    backbone_max=end_points['backbone_feat_max'].item(),
+                    backbone_abs_mean=end_points['backbone_feat_abs_mean'].item(),
+                )
+                print(f"Saved distribution data to: {data_path}")
+                print("To plot, run: python experiments/plots/plot_init_distribution.py --data <path>")
+            except Exception as e:
+                print(f"Warning: Could not save distribution data: {e}")
         
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()

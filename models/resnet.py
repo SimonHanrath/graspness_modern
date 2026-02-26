@@ -71,7 +71,7 @@ class ResNetBase(nn.Module):
                     # We apply a scaling factor of 2 to match ME's effective output magnitude
                     # This accounts for differences in variance propagation through
                     # sparse convolutions and the U-Net architecture and makes sure we have enough outputs above the graspenss threshold
-                    std = (2.0 / fan_out) ** 0.5 * 2
+                    std = (2.0 / fan_out) ** 0.5 * 2.0
                     with torch.no_grad():
                         weight.normal_(0, std)
                 else:

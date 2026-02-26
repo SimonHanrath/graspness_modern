@@ -209,6 +209,8 @@ class GraspNetDataset(Dataset):
             self.sceneIds = list(range(180, 181))  # Just scene_0180
         elif split == 'test_novel_mini':
             self.sceneIds = [161, 175, 188]  # Mini test_novel subset
+        elif split == 'test_train_mini':
+            self.sceneIds = [0, 50, 80]  # Mini train subset for sanity checks
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
         self.depthpath = []
