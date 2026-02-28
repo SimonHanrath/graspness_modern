@@ -8,7 +8,8 @@ Usage:
     python model_analysis/mini_model_test.py \
         --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch10.tar \
         --model_name "test" \
-        --backbone resunet
+        --backbone resunet \
+        --friction 0.4
 """
 
 import subprocess
@@ -29,7 +30,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS = ["test_seen", "test_similar", "test_novel"]
+TEST_SETS =["test_seen_single"]# ["test_seen", "test_similar", "test_novel"]
 
 
 def parse_args():
@@ -55,6 +56,10 @@ def parse_args():
                         help='Skip collision detection (faster but lower AP scores)')
     parser.add_argument('--infer_only', action='store_true', default=False,
                         help='Run inference only without evaluation (fastest)')
+    parser.add_argument('--friction', type=float, nargs='+', default=None,
+                        help='Friction coefficient(s) for AP evaluation. '
+                             'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
+                             'Example: --friction 0.8 for single value, or --friction 0.2 0.4 0.8 for multiple.')
     return parser.parse_args()
 
 
@@ -103,6 +108,10 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
     # Skip collision detection if requested
     if args.no_collision:
         cmd.extend(["--collision_thresh", "0"])
+    
+    # Forward friction coefficients
+    if args.friction is not None:
+        cmd.extend(["--friction"] + [str(f) for f in args.friction])
     
     print(f"\n{'='*80}", flush=True)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting test {test_idx}/{total_tests}", flush=True)
@@ -164,6 +173,7 @@ def main():
     print(f"Num points: {args.num_point}", flush=True)
     print(f"Collision detection: {'OFF' if args.no_collision else 'ON'}", flush=True)
     print(f"Eval mode: {'infer only' if args.infer_only else 'infer + eval'}", flush=True)
+    print(f"Friction coefficients: {args.friction if args.friction else '[0.2, 0.4, 0.6, 0.8, 1.0, 1.2] (default)'}", flush=True)
     print(f"Test sets: {TEST_SETS}", flush=True)
     print(f"Total tests: {len(TEST_SETS)}", flush=True)
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
@@ -177,7 +187,8 @@ def main():
             "checkpoint": args.checkpoint_path,
             "camera": args.camera,
             "backbone": args.backbone,
-            "num_point": args.num_point
+            "num_point": args.num_point,
+            "friction": args.friction if args.friction else [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]
         },
         "results": []
     }

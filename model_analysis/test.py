@@ -42,6 +42,10 @@ parser.add_argument('--no_stable_reweight', action='store_true', default=False,
 parser.add_argument('--split', type=str, default='test_seen',
                     choices=['test', 'test_seen', 'test_seen_single', 'test_seen_mini', 'test_similar', 'test_similar_mini', 'test_novel', 'test_novel_single', 'test_novel_mini', 'test_train_mini'],
                     help='Dataset split to evaluate on [default: test_seen]')
+parser.add_argument('--friction', type=float, nargs='+', default=None,
+                    help='Friction coefficient(s) for AP evaluation. '
+                         'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
+                         'Example: --friction 0.8 for single value, or --friction 0.2 0.4 0.8 for multiple.')
 cfgs = parser.parse_args()
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
@@ -221,39 +225,41 @@ def evaluate(dump_dir):
     
     ge = GraspNetEval(root=cfgs.dataset_root, camera=cfgs.camera, split=eval_split)
     
+    fric = cfgs.friction  # None means use default [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]
+    
     # For single scene splits, evaluate only that scene directly
     if cfgs.split == 'test_seen_single':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[181], dump_folder=dump_dir, proc=1))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[181], dump_folder=dump_dir, proc=1, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Seen (scene 181 only)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_seen_mini':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[101, 115, 128], dump_folder=dump_dir, proc=3))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[101, 115, 128], dump_folder=dump_dir, proc=3, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Seen Mini (scenes 101,115,128)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_similar_mini':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[131, 145, 158], dump_folder=dump_dir, proc=3))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[131, 145, 158], dump_folder=dump_dir, proc=3, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Similar Mini (scenes 131,145,158)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_novel_single':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[180], dump_folder=dump_dir, proc=1))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[180], dump_folder=dump_dir, proc=1, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Novel (scene 180 only)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_novel_mini':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[161, 175, 188], dump_folder=dump_dir, proc=3))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[161, 175, 188], dump_folder=dump_dir, proc=3, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Novel Mini (scenes 161,175,188)={}'.format(cfgs.camera, ap))
     elif cfgs.split == 'test_train_mini':
-        res = np.array(ge.parallel_eval_scenes(scene_ids=[0, 50, 80], dump_folder=dump_dir, proc=3))
+        res = np.array(ge.parallel_eval_scenes(scene_ids=[0, 50, 80], dump_folder=dump_dir, proc=3, list_coe_of_friction=fric))
         ap = np.mean(res)
         print('\nEvaluation Result:\n----------\n{}, AP Train Mini (scenes 0,50,80)={}'.format(cfgs.camera, ap))
     elif eval_split == 'test_seen':
-        res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6)
+        res, ap = ge.eval_seen(dump_folder=dump_dir, proc=6, list_coe_of_friction=fric)
     elif eval_split == 'test_similar':
-        res, ap = ge.eval_similar(dump_folder=dump_dir, proc=6)
+        res, ap = ge.eval_similar(dump_folder=dump_dir, proc=6, list_coe_of_friction=fric)
     elif eval_split == 'test_novel':
-        res, ap = ge.eval_novel(dump_folder=dump_dir, proc=6)
+        res, ap = ge.eval_novel(dump_folder=dump_dir, proc=6, list_coe_of_friction=fric)
     else:
-        res, ap = ge.eval_all(dump_folder=dump_dir, proc=6)
+        res, ap = ge.eval_all(dump_folder=dump_dir, proc=6, list_coe_of_friction=fric)
     
     save_dir = os.path.join(cfgs.dump_dir, 'ap_{}.npy'.format(cfgs.camera))
     np.save(save_dir, res)
