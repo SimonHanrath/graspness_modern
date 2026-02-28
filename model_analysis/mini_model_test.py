@@ -7,17 +7,18 @@ Runs one model on the 3 mini test sets (seen, similar, novel) without stable sco
 Usage:
     python model_analysis/mini_model_test.py \
         --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch10.tar \
-        --model_name "Vanilla ResUNet Realsese 10 epochs full test results" \
+        --model_name "test" \
         --backbone resunet
 """
 
 import subprocess
 import json
 import os
-import re
 import sys
 import argparse
 import time
+import gc
+import numpy as np
 from datetime import datetime, timedelta
 
 # Configuration
@@ -57,22 +58,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_ap_from_output(output):
-    """Parse AP value from test.py output."""
-    patterns = [
-        r'AP Seen Mini[^=]+=([0-9.]+)',
-        r'AP Similar Mini[^=]+=([0-9.]+)',
-        r'AP Novel Mini[^=]+=([0-9.]+)',
-        r'AP Seen[^=]+=([0-9.]+)',
-        r'AP Novel[^=]+=([0-9.]+)',
-        r'AP Similar[^=]+=([0-9.]+)',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, output)
-        if match:
-            return float(match.group(1))
-    return None
+def read_ap_from_npy(dump_dir, camera):
+    """Read AP value directly from the numpy file saved by test.py.
+
+    test.py saves the per-scene accuracy array to <dump_dir>/ap_<camera>.npy.
+    AP is simply np.mean(res).
+    """
+    ap_path = os.path.join(dump_dir, f'ap_{camera}.npy')
+    if not os.path.exists(ap_path):
+        return None
+    res = np.load(ap_path)
+    return float(np.mean(res))
 
 
 def run_test(args, test_set, test_idx=1, total_tests=1):
@@ -83,8 +79,9 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
     model_name = args.model_name or os.path.basename(os.path.dirname(args.checkpoint_path))
     model_name_safe = model_name.replace(' ', '_').replace('/', '_')
     dump_dir = f"dumps/single_test_{model_name_safe}_{test_set}"
+    dump_dir_abs = os.path.join(project_root, dump_dir)
     
-    os.makedirs(os.path.join(project_root, dump_dir), exist_ok=True)
+    os.makedirs(dump_dir_abs, exist_ok=True)
     
     cmd = [
         "python", "model_analysis/test.py",
@@ -125,14 +122,14 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
             cwd=project_root
         )
         
-        full_output = ""
         for line in process.stdout:
             print(line, end='', flush=True)
-            full_output += line
         
         return_code = process.wait()
         
-        ap = parse_ap_from_output(full_output)
+        # Read AP directly from the numpy file that test.py saves,
+        # instead of fragile regex parsing of stdout.
+        ap = read_ap_from_npy(dump_dir_abs, args.camera)
         
         if ap is not None:
             return {
@@ -143,9 +140,8 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
         else:
             return {
                 "status": "error",
-                "error": "Could not parse AP value from output",
+                "error": f"AP file not found at {os.path.join(dump_dir, f'ap_{args.camera}.npy')} (return_code={return_code})",
                 "return_code": return_code,
-                "output": full_output[-2000:]
             }
     except Exception as e:
         return {
@@ -228,6 +224,9 @@ def main():
             else:
                 print(f"    {r['test_set']:<20} FAILED", flush=True)
         print(flush=True)
+        
+        # Force garbage collection between tests to prevent memory accumulation
+        gc.collect()
     
     # Save results
     model_name_safe = model_name.replace(' ', '_').replace('/', '_')
