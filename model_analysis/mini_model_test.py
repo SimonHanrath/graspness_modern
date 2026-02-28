@@ -30,7 +30,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS =["test_seen_single"]# ["test_seen", "test_similar", "test_novel"]
+TEST_SETS =["test_seen", "test_similar", "test_novel"]
 
 
 def parse_args():
