@@ -79,8 +79,8 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
-                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights. Use resunet_rgb for ResUNet with RGB features.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
@@ -99,6 +99,8 @@ parser.add_argument('--view_end', type=int, default=256,
                     help='Ending view index (exclusive) for each scene [default: 256]')
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
+parser.add_argument('--graspness_threshold', type=float, default=0.1,
+                    help='Threshold for graspness score filtering during forward pass [default: -0.1]')
 parser.add_argument('--cosine_lr', action='store_true', default=False,
                     help='Use cosine annealing LR schedule with warmup instead of exponential decay')
 parser.add_argument('--warmup_epochs', type=int, default=2,
@@ -268,6 +270,7 @@ def create_model_and_optimizer():
         ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
         enable_flash=cfgs.enable_flash,
         enable_stable_score=cfgs.enable_stable_score,
+        graspness_threshold=cfgs.graspness_threshold,
     )
     
     # Set device based on distributed or single-GPU mode
@@ -458,6 +461,7 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
             print(f"  max={graspness.max().item():.6f}")
             print(f"  >0.01: {(graspness > 0.01).sum().item()} / {graspness.numel()} ({100*(graspness > 0.01).float().mean().item():.2f}%)")
             print(f"  >0.1:  {(graspness > 0.1).sum().item()} / {graspness.numel()} ({100*(graspness > 0.1).float().mean().item():.2f}%)")
+            print(f"  >0.3:  {(graspness > 0.3).sum().item()} / {graspness.numel()} ({100*(graspness > 0.3).float().mean().item():.2f}%)")
             print(f"\nGraspable count (after threshold): {end_points['graspable_count_stage1'].item():.1f}")
             print("="*80 + "\n")
             

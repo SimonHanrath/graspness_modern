@@ -9,7 +9,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
-from models.backbone_resunet14 import SPconvUNet14D
+from models.backbone_resunet14 import SPconvUNet14D, SPconvUNet18D
 from models.pointcept.backbone_pointnet_transformer_pointcept import (
     PointTransformerV3EncoderFullRes,
     create_ptv3_backbone_grasp,
@@ -32,6 +32,7 @@ class GraspNet(nn.Module):
         ptv3_pretrained_path=None,
         enable_flash=False,
         enable_stable_score=False,
+        graspness_threshold=None,
     ):
         super().__init__()
         self.is_training = is_training
@@ -42,11 +43,17 @@ class GraspNet(nn.Module):
         self.num_view = NUM_VIEW
         self.enable_stable_score = enable_stable_score
         self.backbone_type = backbone  # Store backbone type string for forward pass logic
+        # Use provided threshold or fall back to global constant
+        self.graspness_threshold = graspness_threshold if graspness_threshold is not None else GRASPNESS_THRESHOLD
         
         if backbone == 'resunet':
             self.backbone = SPconvUNet14D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
+        elif backbone == 'resunet18':
+            self.backbone = SPconvUNet18D(in_channels=3, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'resunet_rgb':
             self.backbone = SPconvUNet14D(in_channels=6, out_channels=self.seed_feature_dim, D=3)
+        elif backbone == 'resunet18_rgb':
+            self.backbone = SPconvUNet18D(in_channels=6, out_channels=self.seed_feature_dim, D=3)
         elif backbone == 'pointnet2':
             self.backbone = PointNet2Backbone(in_channels=3, out_channels=self.seed_feature_dim)
         elif backbone == 'transformer_pretrained':
@@ -109,7 +116,7 @@ class GraspNet(nn.Module):
 
         
         # 6-channel input: [x, y, z, r, g, b] where all are normalized
-        if (self.backbone_type in ['transformer_pretrained', 'resunet_rgb']) and (feats.shape[1] == 3):
+        if (self.backbone_type in ['transformer_pretrained', 'resunet_rgb', 'resunet18_rgb']) and (feats.shape[1] == 3):
             
             coord_float = coords[:, 1:].float()  # (M, 3)
             coord_min = coord_float.min(dim=0, keepdim=True).values
@@ -148,7 +155,7 @@ class GraspNet(nn.Module):
         graspness_score = end_points['graspness_score'].squeeze(1)
         objectness_pred = torch.argmax(objectness_score, 1)
         objectness_mask = (objectness_pred == 1)
-        graspness_mask = graspness_score > GRASPNESS_THRESHOLD
+        graspness_mask = graspness_score > self.graspness_threshold
         graspable_mask = objectness_mask & graspness_mask
 
 
