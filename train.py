@@ -101,6 +101,8 @@ parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
 parser.add_argument('--graspness_threshold', type=float, default=0.1,
                     help='Threshold for graspness score filtering during forward pass [default: -0.1]')
+parser.add_argument('--nsample', type=int, default=16,
+                    help='Number of samples for cloud crop in GraspNet [default: 16]')
 parser.add_argument('--cosine_lr', action='store_true', default=False,
                     help='Use cosine annealing LR schedule with warmup instead of exponential decay')
 parser.add_argument('--warmup_epochs', type=int, default=2,
@@ -271,6 +273,7 @@ def create_model_and_optimizer():
         enable_flash=cfgs.enable_flash,
         enable_stable_score=cfgs.enable_stable_score,
         graspness_threshold=cfgs.graspness_threshold,
+        nsample=cfgs.nsample,
     )
     
     # Set device based on distributed or single-GPU mode

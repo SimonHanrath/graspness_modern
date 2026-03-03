@@ -33,6 +33,7 @@ class GraspNet(nn.Module):
         enable_flash=False,
         enable_stable_score=False,
         graspness_threshold=None,
+        nsample=16,
     ):
         super().__init__()
         self.is_training = is_training
@@ -83,7 +84,7 @@ class GraspNet(nn.Module):
             )
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
-        self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
+        self.crop = CloudCrop(nsample=nsample, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth, enable_stable_score=enable_stable_score)
 
     def forward(self, end_points):

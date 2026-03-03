@@ -44,8 +44,8 @@ def parse_args():
     parser.add_argument('--camera', type=str, default=CAMERA,
                         help='Camera type')
     parser.add_argument('--backbone', type=str, default=BACKBONE,
-                        choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
-                        help='Backbone architecture [default: resunet]. Use resunet_rgb for ResUNet with RGB features.')
+                        choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                        help='Backbone architecture [default: resunet]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
     parser.add_argument('--num_point', type=int, default=NUM_POINT,
                         help='Number of points to sample')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
@@ -60,6 +60,10 @@ def parse_args():
                         help='Friction coefficient(s) for AP evaluation. '
                              'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
                              'Example: --friction 0.8 for single value, or --friction 0.2 0.4 0.8 for multiple.')
+    parser.add_argument('--graspness_threshold', type=float, default=-0.1,
+                        help='Threshold for graspness score filtering during forward pass [default: -0.1]')
+    parser.add_argument('--nsample', type=int, default=16,
+                        help='Number of samples for cloud crop in GraspNet [default: 16]')
     return parser.parse_args()
 
 
@@ -112,6 +116,12 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
     # Forward friction coefficients
     if args.friction is not None:
         cmd.extend(["--friction"] + [str(f) for f in args.friction])
+    
+    # Forward graspness threshold
+    cmd.extend(["--graspness_threshold", str(args.graspness_threshold)])
+    
+    # Forward nsample
+    cmd.extend(["--nsample", str(args.nsample)])
     
     print(f"\n{'='*80}", flush=True)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting test {test_idx}/{total_tests}", flush=True)

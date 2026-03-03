@@ -29,8 +29,8 @@ parser.add_argument('--collision_thresh', type=float, default=0.01,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--eval', action='store_true', default=False)
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet_rgb'],
-                    help='Backbone architecture [default: transformer]. Use transformer_pretrained for PTv3 with Pointcept pretrained weights. Use resunet_rgb for ResUNet with RGB features.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
                     help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
 parser.add_argument('--enable_flash', action='store_true', default=False,
@@ -42,6 +42,10 @@ parser.add_argument('--no_stable_reweight', action='store_true', default=False,
 parser.add_argument('--split', type=str, default='test_seen',
                     choices=['test', 'test_seen', 'test_seen_single', 'test_seen_mini', 'test_similar', 'test_similar_mini', 'test_novel', 'test_novel_single', 'test_novel_mini', 'test_train_mini'],
                     help='Dataset split to evaluate on [default: test_seen]')
+parser.add_argument('--graspness_threshold', type=float, default=-0.1,
+                    help='Threshold for graspness score filtering during forward pass [default: -0.1]')
+parser.add_argument('--nsample', type=int, default=16,
+                    help='Number of samples for cloud crop in GraspNet [default: 16]')
 parser.add_argument('--friction', type=float, nargs='+', default=None,
                     help='Friction coefficient(s) for AP evaluation. '
                          'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
@@ -81,6 +85,8 @@ def inference():
         ptv3_pretrained_path=cfgs.ptv3_pretrained_path,
         enable_flash=cfgs.enable_flash,
         enable_stable_score=cfgs.enable_stable_score,
+        graspness_threshold=cfgs.graspness_threshold,
+        nsample=cfgs.nsample,
     )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net.to(device)
