@@ -14,6 +14,7 @@ from models.pointcept.backbone_pointnet_transformer_pointcept import (
     PointTransformerV3EncoderFullRes,
     create_ptv3_backbone_grasp,
 )
+from models.pointcept.backbone_sonata import create_sonata_backbone
 from models.backbone_pointnet2 import PointNet2Backbone
 
 from models.modules import ApproachNet, GraspableNet, CloudCrop, SWADNet
@@ -35,10 +36,12 @@ class GraspNet(nn.Module):
         graspness_threshold=None,
         nsample=16,
         debug_voxel_counts=False,
+        debug_feature_stats=False,
     ):
         super().__init__()
         self.is_training = is_training
         self.debug_voxel_counts = debug_voxel_counts
+        self.debug_feature_stats = debug_feature_stats
         self.seed_feature_dim = seed_feat_dim
         self.num_depth = NUM_DEPTH
         self.num_angle = NUM_ANGLE
@@ -67,6 +70,15 @@ class GraspNet(nn.Module):
                 out_channels=self.seed_feature_dim,
                 use_pretrained=True,
                 enable_flash=enable_flash,
+            )
+        elif backbone == 'sonata':
+            # Sonata: Self-supervised pretrained PTv3 (CVPR 2025)
+            # Automatically estimates normals from point cloud
+            self.backbone = create_sonata_backbone(
+                out_channels=self.seed_feature_dim,
+                checkpoint_path=ptv3_pretrained_path,  # Can override default path
+                enable_flash=enable_flash,
+                voxel_size=0.005,  # Must match dataset voxel_size
             )
         else:  # transformer (default without pretrained)
             self.backbone = PointTransformerV3EncoderFullRes(
@@ -143,7 +155,7 @@ class GraspNet(nn.Module):
         
         # Pass debug flag if backbone supports it (SPconvUNet backbones)
         if hasattr(self.backbone, 'forward') and self.backbone_type.startswith('resunet'):
-            sparse_output = self.backbone(sparse_input, debug_voxel_counts=self.debug_voxel_counts)
+            sparse_output = self.backbone(sparse_input, debug_voxel_counts=self.debug_voxel_counts, debug_feature_stats=self.debug_feature_stats)
         else:
             sparse_output = self.backbone(sparse_input)
         voxel_features = sparse_output.features  # (M, C)

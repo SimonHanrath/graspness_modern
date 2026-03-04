@@ -22,49 +22,66 @@ from utils.pointnet.pointnet2_utils import furthest_point_sample, gather_operati
 
 class PointNet2Backbone(nn.Module):
     """
-    PointNet++ encoder-decoder backbone.
+    PointNet++ encoder-decoder backbone (enhanced version).
     
     Takes sparse voxel tensor, processes internally as point cloud,
     returns sparse tensor with same coordinates and output features.
     
     Uses FPS to subsample input to max_input_points before processing,
     then interpolates features back to all original points.
+    
+    Architecture improvements over original:
+    - 4 SA layers (vs 3) for deeper feature learning matching ResUNet depth
+    - Wider MLPs (64/128 base channels vs 32/64) for more capacity
+    - Higher max_input_points (8192 vs 4096) to retain more geometric detail  
+    - Larger radii progression to capture global scene context
     """
     
-    def __init__(self, in_channels=3, out_channels=512, max_input_points=4096):#2048): TODO: figure this out
+    def __init__(self, in_channels=3, out_channels=512, max_input_points=8192):
         super().__init__()
         self.out_channels = out_channels
         self.max_input_points = max_input_points
         
-        # Encoder - process subsampled points
+        # Encoder - 4 SA layers with wider MLPs
+        # Subsampling: 8192 -> 1024 -> 256 -> 64 -> 16
         self.sa1 = PointnetSAModuleMSG(
-            npoint=512,
+            npoint=1024,
             radii=[0.02, 0.04],
-            nsamples=[16, 16],
-            mlps=[[in_channels, 32, 64], [in_channels, 32, 64]],
+            nsamples=[32, 32],
+            mlps=[[in_channels, 64, 128], [in_channels, 64, 128]],  # Doubled channels
             use_xyz=True
         )
         
         self.sa2 = PointnetSAModuleMSG(
-            npoint=128,
+            npoint=256,
             radii=[0.04, 0.08],
-            nsamples=[16, 16],
-            mlps=[[128, 64, 128], [128, 64, 128]],
+            nsamples=[32, 32],
+            mlps=[[256, 128, 256], [256, 128, 256]],  # Doubled channels
             use_xyz=True
         )
         
         self.sa3 = PointnetSAModuleMSG(
-            npoint=32,
+            npoint=64,
             radii=[0.08, 0.16],
-            nsamples=[16, 16],
-            mlps=[[256, 128, 256], [256, 128, 256]],
+            nsamples=[32, 32],
+            mlps=[[512, 256, 512], [512, 256, 512]],  # Doubled channels
             use_xyz=True
         )
         
-        # Decoder - propagate back to max_input_points resolution
-        self.fp3 = PointnetFPModule(mlp=[512 + 256, 256, 256])
-        self.fp2 = PointnetFPModule(mlp=[256 + 128, 256, 256])
-        self.fp1 = PointnetFPModule(mlp=[256 + in_channels, 256, 256])
+        # SA4 bottleneck - captures global scene context
+        self.sa4 = PointnetSAModuleMSG(
+            npoint=16,
+            radii=[0.16, 0.32],
+            nsamples=[32, 32],
+            mlps=[[1024, 512, 512], [1024, 512, 512]],
+            use_xyz=True
+        )
+        
+        # Decoder - 4 FP layers propagating back to max_input_points resolution
+        self.fp4 = PointnetFPModule(mlp=[1024 + 1024, 512, 512])  # sa4 + sa3 features
+        self.fp3 = PointnetFPModule(mlp=[512 + 512, 512, 512])    # fp4 + sa2 features
+        self.fp2 = PointnetFPModule(mlp=[512 + 256, 256, 256])    # fp3 + sa1 features
+        self.fp1 = PointnetFPModule(mlp=[256 + in_channels, 256, 256])  # fp2 + input features
         
         # Final projection after interpolation to all points
         # NOTE: No ReLU here! ResUNet doesn't use final activation,
@@ -124,16 +141,18 @@ class PointNet2Backbone(nn.Module):
         # PointNet++ expects features as (B, C, N)
         feats_sub = feats_sub.transpose(1, 2)
         
-        # Encoder
+        # Encoder - 4 SA layers
         l0_xyz, l0_feats = xyz_sub, feats_sub
-        l1_xyz, l1_feats = self.sa1(l0_xyz, l0_feats)
-        l2_xyz, l2_feats = self.sa2(l1_xyz, l1_feats)
-        l3_xyz, l3_feats = self.sa3(l2_xyz, l2_feats)
+        l1_xyz, l1_feats = self.sa1(l0_xyz, l0_feats)   # 8192 -> 1024
+        l2_xyz, l2_feats = self.sa2(l1_xyz, l1_feats)   # 1024 -> 256
+        l3_xyz, l3_feats = self.sa3(l2_xyz, l2_feats)   # 256 -> 64
+        l4_xyz, l4_feats = self.sa4(l3_xyz, l3_feats)   # 64 -> 16 (bottleneck)
         
-        # Decoder - back to subsampled resolution
-        l2_feats = self.fp3(l2_xyz, l3_xyz, l2_feats, l3_feats)
-        l1_feats = self.fp2(l1_xyz, l2_xyz, l1_feats, l2_feats)
-        l0_feats = self.fp1(l0_xyz, l1_xyz, l0_feats, l1_feats)  # (B, 256, max_input_points)
+        # Decoder - 4 FP layers back to subsampled resolution
+        l3_feats = self.fp4(l3_xyz, l4_xyz, l3_feats, l4_feats)  # 16 -> 64
+        l2_feats = self.fp3(l2_xyz, l3_xyz, l2_feats, l3_feats)  # 64 -> 256
+        l1_feats = self.fp2(l1_xyz, l2_xyz, l1_feats, l2_feats)  # 256 -> 1024
+        l0_feats = self.fp1(l0_xyz, l1_xyz, l0_feats, l1_feats)  # 1024 -> 8192 (B, 256, max_input_points)
         
         # Interpolate back to all original points
         if fps_idx is not None:

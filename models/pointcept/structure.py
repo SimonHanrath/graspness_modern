@@ -69,6 +69,29 @@ class Point(AttrDict):
         elif "offset" not in self.keys() and "batch" in self.keys():
             self["offset"] = batch2offset(self.batch)
 
+    def clone(self):
+        """
+        Create a shallow copy of the Point with tensors cloned.
+        Non-tensor values are shallow-copied.
+        """
+        cloned = Point()
+        for key, value in self.items():
+            if isinstance(value, torch.Tensor):
+                cloned[key] = value.clone()
+            elif isinstance(value, spconv.SparseConvTensor):
+                # Clone SparseConvTensor by creating new one with cloned features
+                cloned[key] = spconv.SparseConvTensor(
+                    features=value.features.clone(),
+                    indices=value.indices.clone(),
+                    spatial_shape=value.spatial_shape,
+                    batch_size=value.batch_size,
+                )
+            elif isinstance(value, Point):
+                cloned[key] = value.clone()
+            else:
+                cloned[key] = value
+        return cloned
+
     def serialization(self, order="z", depth=None, shuffle_orders=False):
         """
         Point Cloud Serialization

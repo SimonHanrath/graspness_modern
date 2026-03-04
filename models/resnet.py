@@ -68,7 +68,7 @@ class ResNetBase(nn.Module):
                     fan_out = out_channels * kH * kW * kD
                     
                     # Kaiming initialization for ReLU: std = sqrt(2 / fan_out) for mode='fan_out'
-                    # We apply a scaling factor of 2 to match ME's effective output magnitude
+                    # We apply a scaling factor of 2 to closer match ME's effective output magnitude
                     # This accounts for differences in variance propagation through
                     # sparse convolutions and the U-Net architecture and makes sure we have enough outputs above the graspenss threshold
                     std = (2.0 / fan_out) ** 0.5 * 2.0

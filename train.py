@@ -79,8 +79,8 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
-                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). sonata=self-supervised PTv3 (CVPR 2025). Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
@@ -109,6 +109,8 @@ parser.add_argument('--warmup_epochs', type=int, default=2,
                     help='Number of warmup epochs for cosine LR schedule [default: 2]')
 parser.add_argument('--finetune', action='store_true', default=False,
                     help='Fine-tune mode: load weights but reset epoch to 0 and skip optimizer state. Use with --checkpoint_path to fine-tune a vanilla model with stable score.')
+parser.add_argument('--debug_feature_stats', action='store_true', default=False,
+                    help='Print mean/std feature statistics at each backbone stage for first forward pass [default: False]')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')
@@ -116,9 +118,9 @@ parser.add_argument('--local_rank', type=int, default=-1,
 
 cfgs = parser.parse_args()
 
-# Set backbone_lr_scale default once (0.1 for pretrained, 1.0 otherwise)
+# Set backbone_lr_scale default once (0.1 for pretrained backbones, 1.0 otherwise)
 if cfgs.backbone_lr_scale is None:
-    cfgs.backbone_lr_scale = 0.1 if cfgs.backbone == 'transformer_pretrained' else 1.0
+    cfgs.backbone_lr_scale = 0.1 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
 
 # =============================================
 # Distributed Training Setup
@@ -274,6 +276,7 @@ def create_model_and_optimizer():
         enable_stable_score=cfgs.enable_stable_score,
         graspness_threshold=cfgs.graspness_threshold,
         nsample=cfgs.nsample,
+        debug_feature_stats=cfgs.debug_feature_stats,
     )
     
     # Set device based on distributed or single-GPU mode
