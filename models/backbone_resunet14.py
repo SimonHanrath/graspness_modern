@@ -12,6 +12,69 @@ def sparse_cat(a: spconv.SparseConvTensor, b: spconv.SparseConvTensor) -> spconv
 
     return a.replace_feature(torch.cat([a.features, b.features], dim=1))
 
+
+def gather_features_at_indices(
+    expanded: spconv.SparseConvTensor,
+    original_indices: torch.Tensor
+) -> spconv.SparseConvTensor:
+    """
+    Extract features from an expanded SparseConvTensor at the original voxel locations.
+    
+    After SparseConv3d (stride=1), the output may have more voxels than the input.
+    This function gathers features only at the original voxel positions so that
+    the output can be properly mapped back to the original point cloud.
+    
+    Args:
+        expanded: SparseConvTensor after expansion (M' voxels, M' >= M)
+        original_indices: (M, 4) tensor of [batch, x, y, z] indices from before expansion
+    
+    Returns:
+        SparseConvTensor with M voxels at the original locations
+    """
+    exp_indices = expanded.indices  # (M', 4)
+    spatial_shape = expanded.spatial_shape
+    
+    # Create unique keys for fast lookup: batch * (X*Y*Z) + x * (Y*Z) + y * Z + z
+    # Using int64 to avoid overflow
+    X, Y, Z = spatial_shape
+    multiplier = torch.tensor(
+        [X * Y * Z, Y * Z, Z, 1],
+        device=exp_indices.device,
+        dtype=torch.int64
+    )
+    
+    exp_keys = (exp_indices.to(torch.int64) * multiplier).sum(dim=1)  # (M',)
+    orig_keys = (original_indices.to(torch.int64) * multiplier).sum(dim=1)  # (M,)
+    
+    # Build a mapping from key -> position in expanded tensor
+    # Since expanded includes all original voxels (conv can only add, not remove),
+    # every orig_key should exist in exp_keys
+    
+    # Create lookup table: for each unique key, store its position in exp_indices
+    max_key = exp_keys.max().item() + 1
+    lookup = torch.full((max_key,), -1, dtype=torch.long, device=exp_indices.device)
+    lookup[exp_keys] = torch.arange(len(exp_keys), device=exp_indices.device)
+    
+    # Gather indices for original positions
+    gather_idx = lookup[orig_keys]  # (M,)
+    
+    # Sanity check: all original voxels should be found
+    if (gather_idx < 0).any():
+        raise RuntimeError(
+            "gather_features_at_indices: some original voxels not found in expanded tensor. "
+            "This shouldn't happen with SparseConv3d(stride=1)."
+        )
+    
+    gathered_features = expanded.features[gather_idx]  # (M, C)
+    
+    # Create new SparseConvTensor with original indices and gathered features
+    return spconv.SparseConvTensor(
+        features=gathered_features,
+        indices=original_indices,
+        spatial_shape=spatial_shape,
+        batch_size=expanded.batch_size
+    )
+
 class BasicBlock(spconv.SparseModule):
     expansion = 1
 
@@ -155,13 +218,43 @@ class SPconvUNetBase(ResNetBase):
         self.inplanes = self.PLANES[7] + self.INIT_DIM
         self.block8 = self._make_layer(self.BLOCK, self.PLANES[7], self.LAYERS[7], indice_key_prefix="subm_p1")
 
+        # Refinement block: SparseConv3d allows feature propagation to neighbor voxels
+        # This mimics ME's MinkowskiConvolution behavior for better feature aggregation
+        # Placed after all inverse convs so it doesn't break the encoder-decoder index chain
+        refine_channels = self.PLANES[7] * self.BLOCK.expansion
+        self.refine = spconv.SparseSequential(
+            spconv.SparseConv3d(
+                refine_channels,
+                refine_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False,
+                indice_key="refine_expand"  # New key, structure changes here
+            ),
+            nn.BatchNorm1d(refine_channels),
+            nn.ReLU(inplace=True),
+            # SubM conv after expansion to refine without further expansion
+            spconv.SubMConv3d(
+                refine_channels,
+                refine_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False,
+                indice_key="refine_subm"
+            ),
+            nn.BatchNorm1d(refine_channels),
+            nn.ReLU(inplace=True),
+        )
+
         self.final = spconv.SubMConv3d(
             self.PLANES[7] * self.BLOCK.expansion,
             out_channels,
             kernel_size=1,
             stride=1,
             bias=True,
-            indice_key="subm_p1"
+            indice_key="refine_subm"  # Use expanded indices for final output
         )
         self.relu = nn.ReLU(inplace=True)
 
@@ -217,8 +310,19 @@ class SPconvUNetBase(ResNetBase):
 
         out = sparse_cat(out, out_p1)
         out = self.block8(out)
-        out = self.final(out)                                  
-        #out = out.replace_feature(self.relu(out.features))
+        
+        # Save original indices before refinement expansion
+        original_indices = out.indices.clone()
+        
+        # Apply refinement (SparseConv3d may expand voxel set)
+        out = self.refine(out)
+        
+        # Apply final conv while still on expanded indices (consistent with refine's indice_key)
+        out = self.final(out)
+        
+        # Gather features back at original voxel locations AFTER final
+        # This ensures output indices match input indices for proper quantize2original mapping
+        out = gather_features_at_indices(out, original_indices)
         
         return out
 
