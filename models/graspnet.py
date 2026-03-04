@@ -34,9 +34,11 @@ class GraspNet(nn.Module):
         enable_stable_score=False,
         graspness_threshold=None,
         nsample=16,
+        debug_voxel_counts=False,
     ):
         super().__init__()
         self.is_training = is_training
+        self.debug_voxel_counts = debug_voxel_counts
         self.seed_feature_dim = seed_feat_dim
         self.num_depth = NUM_DEPTH
         self.num_angle = NUM_ANGLE
@@ -136,7 +138,14 @@ class GraspNet(nn.Module):
             B                      
         )
         
-        sparse_output = self.backbone(sparse_input)
+        if self.debug_voxel_counts:
+            print(f"[SPCONV] Input: {sparse_input.features.shape[0]} active voxels, spatial_shape={sparse_input.spatial_shape}")
+        
+        # Pass debug flag if backbone supports it (SPconvUNet backbones)
+        if hasattr(self.backbone, 'forward') and self.backbone_type.startswith('resunet'):
+            sparse_output = self.backbone(sparse_input, debug_voxel_counts=self.debug_voxel_counts)
+        else:
+            sparse_output = self.backbone(sparse_input)
         voxel_features = sparse_output.features  # (M, C)
         
         # Map voxel features back to original dense point cloud

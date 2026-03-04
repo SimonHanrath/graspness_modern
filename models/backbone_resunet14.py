@@ -12,69 +12,6 @@ def sparse_cat(a: spconv.SparseConvTensor, b: spconv.SparseConvTensor) -> spconv
 
     return a.replace_feature(torch.cat([a.features, b.features], dim=1))
 
-
-def gather_features_at_indices(
-    expanded: spconv.SparseConvTensor,
-    original_indices: torch.Tensor
-) -> spconv.SparseConvTensor:
-    """
-    Extract features from an expanded SparseConvTensor at the original voxel locations.
-    
-    After SparseConv3d (stride=1), the output may have more voxels than the input.
-    This function gathers features only at the original voxel positions so that
-    the output can be properly mapped back to the original point cloud.
-    
-    Args:
-        expanded: SparseConvTensor after expansion (M' voxels, M' >= M)
-        original_indices: (M, 4) tensor of [batch, x, y, z] indices from before expansion
-    
-    Returns:
-        SparseConvTensor with M voxels at the original locations
-    """
-    exp_indices = expanded.indices  # (M', 4)
-    spatial_shape = expanded.spatial_shape
-    
-    # Create unique keys for fast lookup: batch * (X*Y*Z) + x * (Y*Z) + y * Z + z
-    # Using int64 to avoid overflow
-    X, Y, Z = spatial_shape
-    multiplier = torch.tensor(
-        [X * Y * Z, Y * Z, Z, 1],
-        device=exp_indices.device,
-        dtype=torch.int64
-    )
-    
-    exp_keys = (exp_indices.to(torch.int64) * multiplier).sum(dim=1)  # (M',)
-    orig_keys = (original_indices.to(torch.int64) * multiplier).sum(dim=1)  # (M,)
-    
-    # Build a mapping from key -> position in expanded tensor
-    # Since expanded includes all original voxels (conv can only add, not remove),
-    # every orig_key should exist in exp_keys
-    
-    # Create lookup table: for each unique key, store its position in exp_indices
-    max_key = exp_keys.max().item() + 1
-    lookup = torch.full((max_key,), -1, dtype=torch.long, device=exp_indices.device)
-    lookup[exp_keys] = torch.arange(len(exp_keys), device=exp_indices.device)
-    
-    # Gather indices for original positions
-    gather_idx = lookup[orig_keys]  # (M,)
-    
-    # Sanity check: all original voxels should be found
-    if (gather_idx < 0).any():
-        raise RuntimeError(
-            "gather_features_at_indices: some original voxels not found in expanded tensor. "
-            "This shouldn't happen with SparseConv3d(stride=1)."
-        )
-    
-    gathered_features = expanded.features[gather_idx]  # (M, C)
-    
-    # Create new SparseConvTensor with original indices and gathered features
-    return spconv.SparseConvTensor(
-        features=gathered_features,
-        indices=original_indices,
-        spatial_shape=spatial_shape,
-        batch_size=expanded.batch_size
-    )
-
 class BasicBlock(spconv.SparseModule):
     expansion = 1
 
@@ -148,28 +85,28 @@ class SPconvUNetBase(ResNetBase):
         self.bn0 = nn.BatchNorm1d(self.inplanes)
 
         self.conv1p1s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
+            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
             indice_key="enc_p2"
         )
         self.bn1 = nn.BatchNorm1d(self.inplanes)
         self.block1 = self._make_layer(self.BLOCK, self.PLANES[0], self.LAYERS[0], indice_key_prefix="subm_p2")
 
         self.conv2p2s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
+            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
             indice_key="enc_p4"
         )
         self.bn2 = nn.BatchNorm1d(self.inplanes)
         self.block2 = self._make_layer(self.BLOCK, self.PLANES[1], self.LAYERS[1], indice_key_prefix="subm_p4")
 
         self.conv3p4s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
+            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
             indice_key="enc_p8"
         )
         self.bn3 = nn.BatchNorm1d(self.inplanes)
         self.block3 = self._make_layer(self.BLOCK, self.PLANES[2], self.LAYERS[2], indice_key_prefix="subm_p8")
 
-        self.conv4p8s2 = spconv.SparseConv3d( #TODO: this leads to problems if we do not have enough points per voxel as we downsample to ahrd, so I replace it for now
-            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
+        self.conv4p8s2 = spconv.SparseConv3d(
+            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
             indice_key="enc_p16"
         )
 
@@ -183,7 +120,7 @@ class SPconvUNetBase(ResNetBase):
         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3], self.LAYERS[3], indice_key_prefix="subm_p16")
 
         self.convtr4p16s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[4], kernel_size=2, bias=False,
+            self.inplanes, self.PLANES[4], kernel_size=3, bias=False,
             indice_key="enc_p16"
         )
         self.bntr4 = nn.BatchNorm1d(self.PLANES[4])
@@ -192,7 +129,7 @@ class SPconvUNetBase(ResNetBase):
         self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="subm_p8")
 
         self.convtr5p8s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[5], kernel_size=2, bias=False,
+            self.inplanes, self.PLANES[5], kernel_size=3, bias=False,
             indice_key="enc_p8"
         )
         self.bntr5 = nn.BatchNorm1d(self.PLANES[5])
@@ -201,7 +138,7 @@ class SPconvUNetBase(ResNetBase):
         self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="subm_p4")
 
         self.convtr6p4s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[6], kernel_size=2, bias=False,
+            self.inplanes, self.PLANES[6], kernel_size=3, bias=False,
             indice_key="enc_p4"
         )
         self.bntr6 = nn.BatchNorm1d(self.PLANES[6])
@@ -210,7 +147,7 @@ class SPconvUNetBase(ResNetBase):
         self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="subm_p2")
 
         self.convtr7p2s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[7], kernel_size=2, bias=False,
+            self.inplanes, self.PLANES[7], kernel_size=3, bias=False,
             indice_key="enc_p2"
         )
         self.bntr7 = nn.BatchNorm1d(self.PLANES[7])
@@ -218,74 +155,56 @@ class SPconvUNetBase(ResNetBase):
         self.inplanes = self.PLANES[7] + self.INIT_DIM
         self.block8 = self._make_layer(self.BLOCK, self.PLANES[7], self.LAYERS[7], indice_key_prefix="subm_p1")
 
-        # Refinement block: SparseConv3d allows feature propagation to neighbor voxels
-        # This mimics ME's MinkowskiConvolution behavior for better feature aggregation
-        # Placed after all inverse convs so it doesn't break the encoder-decoder index chain
-        refine_channels = self.PLANES[7] * self.BLOCK.expansion
-        self.refine = spconv.SparseSequential(
-            spconv.SparseConv3d(
-                refine_channels,
-                refine_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False,
-                indice_key="refine_expand"  # New key, structure changes here
-            ),
-            nn.BatchNorm1d(refine_channels),
-            nn.ReLU(inplace=True),
-            # SubM conv after expansion to refine without further expansion
-            spconv.SubMConv3d(
-                refine_channels,
-                refine_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False,
-                indice_key="refine_subm"
-            ),
-            nn.BatchNorm1d(refine_channels),
-            nn.ReLU(inplace=True),
-        )
-
         self.final = spconv.SubMConv3d(
             self.PLANES[7] * self.BLOCK.expansion,
             out_channels,
             kernel_size=1,
             stride=1,
             bias=True,
-            indice_key="refine_subm"  # Use expanded indices for final output
+            indice_key="subm_p1"
         )
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x):
+    def forward(self, x, debug_voxel_counts=False):
         out = self.conv0p1s1(x)
         out = out.replace_feature(self.bn0(out.features))
         out_p1 = out.replace_feature(self.relu(out.features))
+        if debug_voxel_counts:
+            print(f"[SPCONV] out_p1 (stride 1): {out_p1.features.shape[0]} active voxels, spatial_shape={out_p1.spatial_shape}")
 
         out = self.conv1p1s2(out_p1)
         out = out.replace_feature(self.bn1(out.features))
         out = out.replace_feature(self.relu(out.features))
         out_b1p2 = self.block1(out)
+        if debug_voxel_counts:
+            print(f"[SPCONV] out_b1p2 (stride 2): {out_b1p2.features.shape[0]} active voxels, spatial_shape={out_b1p2.spatial_shape}")
 
         out = self.conv2p2s2(out_b1p2)
         out = out.replace_feature(self.bn2(out.features))
         out = out.replace_feature(self.relu(out.features))
         out_b2p4 = self.block2(out)
+        if debug_voxel_counts:
+            print(f"[SPCONV] out_b2p4 (stride 4): {out_b2p4.features.shape[0]} active voxels, spatial_shape={out_b2p4.spatial_shape}")
 
         out = self.conv3p4s2(out_b2p4)
         out = out.replace_feature(self.bn3(out.features))
         out = out.replace_feature(self.relu(out.features))
         out_b3p8 = self.block3(out)
+        if debug_voxel_counts:
+            print(f"[SPCONV] out_b3p8 (stride 8): {out_b3p8.features.shape[0]} active voxels, spatial_shape={out_b3p8.spatial_shape}")
 
         out = self.conv4p8s2(out_b3p8)
         out = out.replace_feature(self.bn4(out.features))
         out = out.replace_feature(self.relu(out.features))
         out = self.block4(out)
+        if debug_voxel_counts:
+            print(f"[SPCONV] bottleneck (stride 16): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = self.convtr4p16s2(out)
         out = out.replace_feature(self.bntr4(out.features))
         out = out.replace_feature(self.relu(out.features))
+        if debug_voxel_counts:
+            print(f"[SPCONV] upsample_p8 (after convtr4): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b3p8)
         out = self.block5(out)
@@ -293,6 +212,8 @@ class SPconvUNetBase(ResNetBase):
         out = self.convtr5p8s2(out)
         out = out.replace_feature(self.bntr5(out.features))
         out = out.replace_feature(self.relu(out.features))
+        if debug_voxel_counts:
+            print(f"[SPCONV] upsample_p4 (after convtr5): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b2p4)
         out = self.block6(out)
@@ -300,6 +221,8 @@ class SPconvUNetBase(ResNetBase):
         out = self.convtr6p4s2(out)
         out = out.replace_feature(self.bntr6(out.features))
         out = out.replace_feature(self.relu(out.features))
+        if debug_voxel_counts:
+            print(f"[SPCONV] upsample_p2 (after convtr6): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b1p2)
         out = self.block7(out)
@@ -307,22 +230,15 @@ class SPconvUNetBase(ResNetBase):
         out = self.convtr7p2s2(out)
         out = out.replace_feature(self.bntr7(out.features))
         out = out.replace_feature(self.relu(out.features))
+        if debug_voxel_counts:
+            print(f"[SPCONV] upsample_p1 (after convtr7): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_p1)
         out = self.block8(out)
-        
-        # Save original indices before refinement expansion
-        original_indices = out.indices.clone()
-        
-        # Apply refinement (SparseConv3d may expand voxel set)
-        out = self.refine(out)
-        
-        # Apply final conv while still on expanded indices (consistent with refine's indice_key)
         out = self.final(out)
-        
-        # Gather features back at original voxel locations AFTER final
-        # This ensures output indices match input indices for proper quantize2original mapping
-        out = gather_features_at_indices(out, original_indices)
+        if debug_voxel_counts:
+            print(f"[SPCONV] final output: {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
+        #out = out.replace_feature(self.relu(out.features))
         
         return out
 
