@@ -85,28 +85,28 @@ class SPconvUNetBase(ResNetBase):
         self.bn0 = nn.BatchNorm1d(self.inplanes)
 
         self.conv1p1s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p2"
         )
         self.bn1 = nn.BatchNorm1d(self.inplanes)
         self.block1 = self._make_layer(self.BLOCK, self.PLANES[0], self.LAYERS[0], indice_key_prefix="subm_p2")
 
         self.conv2p2s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p4"
         )
         self.bn2 = nn.BatchNorm1d(self.inplanes)
         self.block2 = self._make_layer(self.BLOCK, self.PLANES[1], self.LAYERS[1], indice_key_prefix="subm_p4")
 
         self.conv3p4s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p8"
         )
         self.bn3 = nn.BatchNorm1d(self.inplanes)
         self.block3 = self._make_layer(self.BLOCK, self.PLANES[2], self.LAYERS[2], indice_key_prefix="subm_p8")
 
-        self.conv4p8s2 = spconv.SparseConv3d(
-            self.inplanes, self.inplanes, kernel_size=3, stride=2, padding=1, bias=False,
+        self.conv4p8s2 = spconv.SparseConv3d( #TODO: this leads to problems if we do not have enough points per voxel as we downsample to ahrd, so I replace it for now
+            self.inplanes, self.inplanes, kernel_size=2, stride=2, bias=False,
             indice_key="enc_p16"
         )
 
@@ -120,7 +120,7 @@ class SPconvUNetBase(ResNetBase):
         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3], self.LAYERS[3], indice_key_prefix="subm_p16")
 
         self.convtr4p16s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[4], kernel_size=3, bias=False,
+            self.inplanes, self.PLANES[4], kernel_size=2, bias=False,
             indice_key="enc_p16"
         )
         self.bntr4 = nn.BatchNorm1d(self.PLANES[4])
@@ -129,7 +129,7 @@ class SPconvUNetBase(ResNetBase):
         self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="subm_p8")
 
         self.convtr5p8s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[5], kernel_size=3, bias=False,
+            self.inplanes, self.PLANES[5], kernel_size=2, bias=False,
             indice_key="enc_p8"
         )
         self.bntr5 = nn.BatchNorm1d(self.PLANES[5])
@@ -138,7 +138,7 @@ class SPconvUNetBase(ResNetBase):
         self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="subm_p4")
 
         self.convtr6p4s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[6], kernel_size=3, bias=False,
+            self.inplanes, self.PLANES[6], kernel_size=2, bias=False,
             indice_key="enc_p4"
         )
         self.bntr6 = nn.BatchNorm1d(self.PLANES[6])
@@ -147,7 +147,7 @@ class SPconvUNetBase(ResNetBase):
         self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="subm_p2")
 
         self.convtr7p2s2 = spconv.SparseInverseConv3d(
-            self.inplanes, self.PLANES[7], kernel_size=3, bias=False,
+            self.inplanes, self.PLANES[7], kernel_size=2, bias=False,
             indice_key="enc_p2"
         )
         self.bntr7 = nn.BatchNorm1d(self.PLANES[7])
@@ -165,14 +165,12 @@ class SPconvUNetBase(ResNetBase):
         )
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x, debug_voxel_counts=True, debug_feature_stats=True):
+    def forward(self, x, debug_voxel_counts=False, debug_feature_stats=False):
         out = self.conv0p1s1(x)
         out = out.replace_feature(self.bn0(out.features))
         out_p1 = out.replace_feature(self.relu(out.features))
         if debug_voxel_counts:
             print(f"[SPCONV] out_p1 (stride 1): {out_p1.features.shape[0]} active voxels, spatial_shape={out_p1.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] out_p1: mean={out_p1.features.mean().item():.4f}, std={out_p1.features.std().item():.4f}")
 
         out = self.conv1p1s2(out_p1)
         out = out.replace_feature(self.bn1(out.features))
@@ -180,8 +178,6 @@ class SPconvUNetBase(ResNetBase):
         out_b1p2 = self.block1(out)
         if debug_voxel_counts:
             print(f"[SPCONV] out_b1p2 (stride 2): {out_b1p2.features.shape[0]} active voxels, spatial_shape={out_b1p2.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] out_b1p2: mean={out_b1p2.features.mean().item():.4f}, std={out_b1p2.features.std().item():.4f}")
 
         out = self.conv2p2s2(out_b1p2)
         out = out.replace_feature(self.bn2(out.features))
@@ -189,8 +185,6 @@ class SPconvUNetBase(ResNetBase):
         out_b2p4 = self.block2(out)
         if debug_voxel_counts:
             print(f"[SPCONV] out_b2p4 (stride 4): {out_b2p4.features.shape[0]} active voxels, spatial_shape={out_b2p4.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] out_b2p4: mean={out_b2p4.features.mean().item():.4f}, std={out_b2p4.features.std().item():.4f}")
 
         out = self.conv3p4s2(out_b2p4)
         out = out.replace_feature(self.bn3(out.features))
@@ -198,8 +192,6 @@ class SPconvUNetBase(ResNetBase):
         out_b3p8 = self.block3(out)
         if debug_voxel_counts:
             print(f"[SPCONV] out_b3p8 (stride 8): {out_b3p8.features.shape[0]} active voxels, spatial_shape={out_b3p8.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] out_b3p8: mean={out_b3p8.features.mean().item():.4f}, std={out_b3p8.features.std().item():.4f}")
 
         out = self.conv4p8s2(out_b3p8)
         out = out.replace_feature(self.bn4(out.features))
@@ -207,8 +199,6 @@ class SPconvUNetBase(ResNetBase):
         out = self.block4(out)
         if debug_voxel_counts:
             print(f"[SPCONV] bottleneck (stride 16): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] bottleneck: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
 
         out = self.convtr4p16s2(out)
         out = out.replace_feature(self.bntr4(out.features))
@@ -217,8 +207,6 @@ class SPconvUNetBase(ResNetBase):
             print(f"[SPCONV] upsample_p8 (after convtr4): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b3p8)
-        if debug_feature_stats:
-            print(f"[SPCONV] after_cat_p8: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
         out = self.block5(out)
 
         out = self.convtr5p8s2(out)
@@ -228,8 +216,6 @@ class SPconvUNetBase(ResNetBase):
             print(f"[SPCONV] upsample_p4 (after convtr5): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b2p4)
-        if debug_feature_stats:
-            print(f"[SPCONV] after_cat_p4: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
         out = self.block6(out)
 
         out = self.convtr6p4s2(out)
@@ -239,8 +225,6 @@ class SPconvUNetBase(ResNetBase):
             print(f"[SPCONV] upsample_p2 (after convtr6): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_b1p2)
-        if debug_feature_stats:
-            print(f"[SPCONV] after_cat_p2: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
         out = self.block7(out)
 
         out = self.convtr7p2s2(out)
@@ -250,14 +234,10 @@ class SPconvUNetBase(ResNetBase):
             print(f"[SPCONV] upsample_p1 (after convtr7): {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
 
         out = sparse_cat(out, out_p1)
-        if debug_feature_stats:
-            print(f"[SPCONV] after_cat_p1: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
         out = self.block8(out)
         out = self.final(out)
         if debug_voxel_counts:
             print(f"[SPCONV] final output: {out.features.shape[0]} active voxels, spatial_shape={out.spatial_shape}")
-        if debug_feature_stats:
-            print(f"[SPCONV] final: mean={out.features.mean().item():.4f}, std={out.features.std().item():.4f}")
         #out = out.replace_feature(self.relu(out.features))
         
         return out
