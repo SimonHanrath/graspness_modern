@@ -79,7 +79,7 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
                     help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). sonata=self-supervised PTv3 (CVPR 2025). Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
