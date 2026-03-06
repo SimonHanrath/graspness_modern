@@ -149,13 +149,20 @@ def sample_floor_aware(cloud, trans, num_points, floor_height=0.01, floor_keep_r
 class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
-                 enable_stable_score=False, floor_sampling=False, view_start=0, view_end=256):
+                 enable_stable_score=False, floor_sampling=False, view_start=0, view_end=256,
+                 include_floor=False):
         assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
         self.voxel_size = voxel_size
         self.num_points = num_points
-        self.remove_outlier = remove_outlier
+        self.include_floor = include_floor
+        
+        # include_floor overrides remove_outlier to keep floor/table points
+        if include_floor:
+            self.remove_outlier = False
+        else:
+            self.remove_outlier = remove_outlier
         self.grasp_labels = grasp_labels
         self.camera = camera
         self.augment = augment
@@ -226,7 +233,9 @@ class GraspNetDataset(Dataset):
                 self.rgbpath.append(os.path.join(root, 'scenes', x, camera, 'rgb', str(img_num).zfill(4) + '.png'))
                 self.labelpath.append(os.path.join(root, 'scenes', x, camera, 'label', str(img_num).zfill(4) + '.png'))
                 self.metapath.append(os.path.join(root, 'scenes', x, camera, 'meta', str(img_num).zfill(4) + '.mat'))
-                self.graspnesspath.append(os.path.join(root, 'graspness', x, camera, str(img_num).zfill(4) + '.npy'))
+                # Use graspness_full/ when include_floor=True, otherwise use graspness/
+                graspness_subdir = 'graspness_full' if self.include_floor else 'graspness'
+                self.graspnesspath.append(os.path.join(root, graspness_subdir, x, camera, str(img_num).zfill(4) + '.npy'))
                 self.scenename.append(x.strip())
                 self.frameid.append(img_num)
             

@@ -50,6 +50,8 @@ parser.add_argument('--friction', type=float, nargs='+', default=None,
                     help='Friction coefficient(s) for AP evaluation. '
                          'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
                          'Example: --friction 0.8 for single value, or --friction 0.2 0.4 0.8 for multiple.')
+parser.add_argument('--include_floor', action='store_true', default=False,
+                    help='Include floor/table points in inference (for models trained with --include_floor)')
 cfgs = parser.parse_args()
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
@@ -71,7 +73,7 @@ def inference():
     
     test_dataset = GraspNetDataset(cfgs.dataset_root, split=cfgs.split, camera=cfgs.camera, num_points=cfgs.num_point,
                                    voxel_size=cfgs.voxel_size, remove_outlier=True, augment=False, load_label=False,
-                                   use_rgb=use_rgb)
+                                   use_rgb=use_rgb, include_floor=cfgs.include_floor)
     print(f'Test dataset length: {len(test_dataset)} (split: {cfgs.split})')
     scene_list = test_dataset.scene_list()
     test_dataloader = DataLoader(test_dataset, batch_size=cfgs.batch_size, shuffle=False,

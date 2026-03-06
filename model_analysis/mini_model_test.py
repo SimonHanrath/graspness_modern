@@ -6,10 +6,10 @@ Runs one model on the 3 mini test sets (seen, similar, novel) without stable sco
 
 Usage:
     python model_analysis/mini_model_test.py \
-        --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch10.tar \
-        --model_name "test" \
-        --backbone resunet \
-        --friction 0.4
+        --checkpoint_path logs/gsnet_pointnet2bigger_realsense_t001_n15/gsnet_resunet_epoch10.tar \
+        --model_name "pointnet2bigger test 0.8" \
+        --backbone pointnet2 \
+        --friction 0.8
 """
 
 import subprocess
@@ -30,7 +30,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS =["test_seen", "test_similar", "test_novel"]
+TEST_SETS =["test_seen_mini", "test_similar_mini", "test_novel_mini"]
 
 
 def parse_args():
@@ -60,10 +60,12 @@ def parse_args():
                         help='Friction coefficient(s) for AP evaluation. '
                              'Default: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]. '
                              'Example: --friction 0.8 for single value, or --friction 0.2 0.4 0.8 for multiple.')
-    parser.add_argument('--graspness_threshold', type=float, default=-0.1,
+    parser.add_argument('--graspness_threshold', type=float, default=0.01,
                         help='Threshold for graspness score filtering during forward pass [default: -0.1]')
     parser.add_argument('--nsample', type=int, default=16,
                         help='Number of samples for cloud crop in GraspNet [default: 16]')
+    parser.add_argument('--include_floor', action='store_true', default=False,
+                        help='Include floor/table points in inference (for models trained with --include_floor)')
     return parser.parse_args()
 
 
@@ -122,6 +124,10 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
     
     # Forward nsample
     cmd.extend(["--nsample", str(args.nsample)])
+    
+    # Forward include_floor
+    if args.include_floor:
+        cmd.append("--include_floor")
     
     print(f"\n{'='*80}", flush=True)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting test {test_idx}/{total_tests}", flush=True)

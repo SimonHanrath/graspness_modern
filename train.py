@@ -79,7 +79,7 @@ parser.add_argument('--lazy_grasp_labels', action='store_true', default=False,
                     help='Use lazy loading for grasp labels to reduce memory (useful with many workers)')
 parser.add_argument('--weight_decay', type=float, default=0.0,
                     help='Weight decay for AdamW optimizer (recommended: 0.02-0.05 for transformers) [default: 0.0]')
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+parser.add_argument('--', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
                     help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). sonata=self-supervised PTv3 (CVPR 2025). Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--grad_clip', type=float, default=0.0,
                     help='Gradient clipping max norm (recommended: 1.0-5.0 for transformers, 0 to disable) [default: 0.0]')
@@ -97,6 +97,8 @@ parser.add_argument('--view_start', type=int, default=0,
                     help='Starting view index (inclusive) for each scene [default: 0]')
 parser.add_argument('--view_end', type=int, default=256,
                     help='Ending view index (exclusive) for each scene [default: 256]')
+parser.add_argument('--include_floor', action='store_true', default=False,
+                    help='Include floor/table points in training (uses graspness_full/ labels, requires running generate_graspness_full.py first)')
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
 parser.add_argument('--graspness_threshold', type=float, default=0.1,
@@ -227,7 +229,8 @@ def create_dataloaders():
     train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.train_split,
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
-                                    enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end)
+                                    enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end,
+                                    include_floor=cfgs.include_floor)
     log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
 
 
