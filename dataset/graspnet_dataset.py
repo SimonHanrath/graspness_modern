@@ -150,13 +150,14 @@ class GraspNetDataset(Dataset):
     def __init__(self, root, grasp_labels=None, camera='kinect', split='train', num_points=20000,
                  voxel_size=0.005, remove_outlier=True, augment=False, load_label=True, use_rgb=False,
                  enable_stable_score=False, floor_sampling=False, view_start=0, view_end=256,
-                 include_floor=False):
+                 include_floor=False, augment_translation=True):
         assert (num_points <= 300000)  # Raised from 50k; adjust based on GPU memory
         self.root = root
         self.split = split
         self.voxel_size = voxel_size
         self.num_points = num_points
         self.include_floor = include_floor
+        self.augment_translation = augment_translation  # Whether to apply random translation in augmentation
         
         # include_floor overrides remove_outlier to keep floor/table points
         if include_floor:
@@ -323,14 +324,16 @@ class GraspNetDataset(Dataset):
             object_poses_list[i] = np.dot(rot_mat, object_poses_list[i]).astype(np.float32)
 
         # Random translation: X/Y in [-0.2, 0.2]m, Z in [-0.1, 0.2]m
-        translation = np.array([
-            np.random.uniform(-0.2, 0.2),
-            np.random.uniform(-0.2, 0.2),
-            np.random.uniform(-0.1, 0.2)
-        ], dtype=np.float32)
-        point_clouds = point_clouds + translation
-        for i in range(len(object_poses_list)):
-            object_poses_list[i][:, 3] += translation
+        # NOTE: Original paper does NOT use translation augmentation
+        if self.augment_translation:
+            translation = np.array([
+                np.random.uniform(-0.2, 0.2),
+                np.random.uniform(-0.2, 0.2),
+                np.random.uniform(-0.1, 0.2)
+            ], dtype=np.float32)
+            point_clouds = point_clouds + translation
+            for i in range(len(object_poses_list)):
+                object_poses_list[i][:, 3] += translation
 
         return point_clouds, object_poses_list
 

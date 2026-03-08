@@ -113,6 +113,8 @@ parser.add_argument('--finetune', action='store_true', default=False,
                     help='Fine-tune mode: load weights but reset epoch to 0 and skip optimizer state. Use with --checkpoint_path to fine-tune a vanilla model with stable score.')
 parser.add_argument('--debug_feature_stats', action='store_true', default=False,
                     help='Print mean/std feature statistics at each backbone stage for first forward pass [default: False]')
+parser.add_argument('--no_translation_aug', action='store_true', default=False,
+                    help='Disable random translation in data augmentation (paper uses no translation) [default: False]')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')
@@ -230,7 +232,7 @@ def create_dataloaders():
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
                                     enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end,
-                                    include_floor=cfgs.include_floor)
+                                    include_floor=cfgs.include_floor, augment_translation=not cfgs.no_translation_aug)
     log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
 
 
