@@ -1,3 +1,12 @@
+"""
+Runs the AP test like in the graspness paper, with added flags to accomadate new features
+like stable score and different backbones.
+Also includes a debug mode to print out detailed tensor stats for the first batch, which
+can help identify issues with the model outputs or data loading.
+"""
+
+
+
 import os
 import sys
 import numpy as np
@@ -29,8 +38,8 @@ parser.add_argument('--collision_thresh', type=float, default=0.01,
 parser.add_argument('--voxel_size_cd', type=float, default=0.01, help='Voxel Size for collision detection')
 parser.add_argument('--infer', action='store_true', default=False)
 parser.add_argument('--eval', action='store_true', default=False)
-parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
-                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
+parser.add_argument('--backbone', type=str, default='transformer', choices=['transformer', 'transformer_pretrained', 'sonata', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                    help='Backbone architecture [default: transformer]. resunet=14D, resunet18=18D (more layers). sonata=self-supervised PTv3. Use _rgb suffix for 6-channel RGB input.')
 parser.add_argument('--ptv3_pretrained_path', type=str, default=None,
                     help='Path to PTv3 pretrained weights (.pth file). If not specified, uses models/pointcept/model_best.pth')
 parser.add_argument('--enable_flash', action='store_true', default=False,
