@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-AI slop !!!!
+AI generated !!!!
 Single model test script.
 Runs one model on the 3 mini test sets (seen, similar, novel) without stable score.
 
+Basically a script that executes test.py sequentially on the 3 mini test sets, with some added bells and whistles:
+
 Usage:
     python model_analysis/mini_model_test.py \
-        --checkpoint_path logs/gsnet_pointnet2bigger_realsense_t001_n15/gsnet_resunet_epoch10.tar \
-        --model_name "pointnet2bigger test 0.8" \
-        --backbone pointnet2 \
-        --friction 0.8
+        --checkpoint_path logs/gsnet_sonata_t01_n15_lrscale01_correct/gsnet_sonata_epoch10.tar \
+        --model_name "sonata lr scale 0.1 test 0.8" \
+        --backbone sonata \
+        --friction 0.8 \
+        --graspness_threshold 0.1
 """
 
 import subprocess
@@ -30,7 +33,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS =["test_seen_mini", "test_similar_mini", "test_novel_mini"]
+TEST_SETS =["test_seen", "test_similar", "test_novel"]
 
 
 def parse_args():
@@ -44,7 +47,7 @@ def parse_args():
     parser.add_argument('--camera', type=str, default=CAMERA,
                         help='Camera type')
     parser.add_argument('--backbone', type=str, default=BACKBONE,
-                        choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb'],
+                        choices=['transformer', 'transformer_pretrained', 'pointnet2', 'resunet', 'resunet18', 'resunet_rgb', 'resunet18_rgb', 'sonata'],
                         help='Backbone architecture [default: resunet]. resunet=14D, resunet18=18D (more layers). Use _rgb suffix for 6-channel RGB input.')
     parser.add_argument('--num_point', type=int, default=NUM_POINT,
                         help='Number of points to sample')
