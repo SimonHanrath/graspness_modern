@@ -5,12 +5,50 @@ from models.resnet import ResNetBase
 
 
 def sparse_cat(a: spconv.SparseConvTensor, b: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
-    if not torch.equal(a.indices, b.indices):
-        raise ValueError("sparse_cat: indices differ; ensure matching indice_key / inverse conv alignment.")
+    """
+    Concatenate features of two sparse tensors along the channel dimension.
+    
+    If indices match exactly: simple concatenation.
+    If indices differ: align by matching coordinates, zero-pad missing features.
+    This mimics ME.cat behavior which handles mismatched active sets.
+    """
     if a.spatial_shape != b.spatial_shape or a.batch_size != b.batch_size:
         raise ValueError("sparse_cat: spatial_shape or batch_size mismatch.")
-
-    return a.replace_feature(torch.cat([a.features, b.features], dim=1))
+    
+    # Fast path: indices match exactly
+    if torch.equal(a.indices, b.indices):
+        return a.replace_feature(torch.cat([a.features, b.features], dim=1))
+    
+    # Slow path: indices differ - need to align
+    # This can happen when BasicBlocks use SparseConv (dilating) vs decoder uses InverseConv
+    device = a.features.device
+    dtype = a.features.dtype
+    
+    # Convert indices to hashable tuples for matching
+    # indices shape: (N, 4) where columns are [batch, x, y, z]
+    a_idx = a.indices  # (Na, 4)
+    b_idx = b.indices  # (Nb, 4)
+    
+    # Create a merged index set (union of both)
+    all_idx = torch.cat([a_idx, b_idx], dim=0)
+    unique_idx, inverse = torch.unique(all_idx, dim=0, return_inverse=True)
+    
+    num_unique = unique_idx.shape[0]
+    a_feat_dim = a.features.shape[1]
+    b_feat_dim = b.features.shape[1]
+    
+    # Create output features, zero-initialized
+    out_feats = torch.zeros(num_unique, a_feat_dim + b_feat_dim, device=device, dtype=dtype)
+    
+    # Map a's features
+    a_positions = inverse[:a_idx.shape[0]]
+    out_feats[a_positions, :a_feat_dim] = a.features
+    
+    # Map b's features
+    b_positions = inverse[a_idx.shape[0]:]
+    out_feats[b_positions, a_feat_dim:] = b.features
+    
+    return spconv.SparseConvTensor(out_feats, unique_idx, a.spatial_shape, a.batch_size)
 
 class BasicBlock(spconv.SparseModule):
     expansion = 1
@@ -18,16 +56,15 @@ class BasicBlock(spconv.SparseModule):
     def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, bn_momentum=0.1, indice_key=None):
         super().__init__()
 
-        ConvLayer = spconv.SubMConv3d if stride == 1 else spconv.SparseConv3d
-
-        self.conv1 = ConvLayer(
+        # SubMConv3d preserves indices exactly, required for SparseInverseConv3d in decoder
+        self.conv1 = spconv.SubMConv3d(
             inplanes, planes,
             kernel_size=3,
             stride=stride,
             padding=dilation,
             dilation=dilation,
             bias=False,
-            indice_key=f"{indice_key}_1" if indice_key else None
+            indice_key=indice_key
         )
         self.norm1 = nn.BatchNorm1d(planes, momentum=bn_momentum)
         self.relu = nn.ReLU(inplace=True)
@@ -39,7 +76,7 @@ class BasicBlock(spconv.SparseModule):
             padding=dilation,
             dilation=dilation,
             bias=False,
-            indice_key=f"{indice_key}_2" if indice_key else None
+            indice_key=indice_key
         )
         self.norm2 = nn.BatchNorm1d(planes, momentum=bn_momentum)
 
@@ -58,8 +95,8 @@ class BasicBlock(spconv.SparseModule):
         if self.downsample is not None:
             identity = self.downsample(x)
 
+        # SubMConv preserves indices, so simple addition works
         out = out.replace_feature(out.features + identity.features)
-
         out = out.replace_feature(self.relu(out.features))
         
         return out
@@ -119,6 +156,7 @@ class SPconvUNetBase(ResNetBase):
         self.bn4 = nn.BatchNorm1d(self.inplanes)
         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3], self.LAYERS[3], indice_key_prefix="subm_p16")
 
+        # Decoder: SparseInverseConv3d reverses encoder indices exactly
         self.convtr4p16s2 = spconv.SparseInverseConv3d(
             self.inplanes, self.PLANES[4], kernel_size=2, bias=False,
             indice_key="enc_p16"
@@ -126,7 +164,7 @@ class SPconvUNetBase(ResNetBase):
         self.bntr4 = nn.BatchNorm1d(self.PLANES[4])
 
         self.inplanes = self.PLANES[4] + self.PLANES[2] * self.BLOCK.expansion
-        self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="subm_p8")
+        self.block5 = self._make_layer(self.BLOCK, self.PLANES[4], self.LAYERS[4], indice_key_prefix="dec_p8")
 
         self.convtr5p8s2 = spconv.SparseInverseConv3d(
             self.inplanes, self.PLANES[5], kernel_size=2, bias=False,
@@ -135,7 +173,7 @@ class SPconvUNetBase(ResNetBase):
         self.bntr5 = nn.BatchNorm1d(self.PLANES[5])
 
         self.inplanes = self.PLANES[5] + self.PLANES[1] * self.BLOCK.expansion
-        self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="subm_p4")
+        self.block6 = self._make_layer(self.BLOCK, self.PLANES[5], self.LAYERS[5], indice_key_prefix="dec_p4")
 
         self.convtr6p4s2 = spconv.SparseInverseConv3d(
             self.inplanes, self.PLANES[6], kernel_size=2, bias=False,
@@ -144,7 +182,7 @@ class SPconvUNetBase(ResNetBase):
         self.bntr6 = nn.BatchNorm1d(self.PLANES[6])
 
         self.inplanes = self.PLANES[6] + self.PLANES[0] * self.BLOCK.expansion
-        self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="subm_p2")
+        self.block7 = self._make_layer(self.BLOCK, self.PLANES[6], self.LAYERS[6], indice_key_prefix="dec_p2")
 
         self.convtr7p2s2 = spconv.SparseInverseConv3d(
             self.inplanes, self.PLANES[7], kernel_size=2, bias=False,
@@ -153,7 +191,7 @@ class SPconvUNetBase(ResNetBase):
         self.bntr7 = nn.BatchNorm1d(self.PLANES[7])
 
         self.inplanes = self.PLANES[7] + self.INIT_DIM
-        self.block8 = self._make_layer(self.BLOCK, self.PLANES[7], self.LAYERS[7], indice_key_prefix="subm_p1")
+        self.block8 = self._make_layer(self.BLOCK, self.PLANES[7], self.LAYERS[7], indice_key_prefix="dec_p1")
 
         self.final = spconv.SubMConv3d(
             self.PLANES[7] * self.BLOCK.expansion,
@@ -161,7 +199,7 @@ class SPconvUNetBase(ResNetBase):
             kernel_size=1,
             stride=1,
             bias=True,
-            indice_key="subm_p1"
+            indice_key="final_p1"
         )
         self.relu = nn.ReLU(inplace=True)
 

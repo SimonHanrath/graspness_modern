@@ -5,8 +5,8 @@
 import torch
 import numpy as np
 
-GRASP_MAX_WIDTH = 0.10  
-GRASPNESS_THRESHOLD = 0.01  # Original threshold 0.1
+GRASP_MAX_WIDTH = 0.10  # TODO: Cange to 0.08 or .07 for training of PANDA deployment model
+GRASPNESS_THRESHOLD = 0.1  # Threshold for graspness filtering
 NUM_VIEW = 300  
 NUM_ANGLE = 12  
 NUM_DEPTH = 4
