@@ -90,7 +90,10 @@ parser.add_argument('--enable_flash', action='store_true', default=False,
 parser.add_argument('--accumulation_steps', type=int, default=1,
                     help='Gradient accumulation steps (simulate larger batch with batch_size=1) [default: 1]')
 parser.add_argument('--backbone_lr_scale', type=float, default=None,
-                    help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained, 1.0 otherwise')
+                    help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained/sonata, 1.0 otherwise')
+parser.add_argument('--layer_decay', type=float, default=None,
+                    help='Layer-wise LR decay factor for pretrained backbones. Each encoder stage gets lr * layer_decay^(num_stages - stage). '
+                         'Default: 0.75 for sonata/transformer_pretrained, 1.0 (disabled) otherwise')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
 parser.add_argument('--view_start', type=int, default=0,
@@ -125,6 +128,15 @@ cfgs = parser.parse_args()
 # Set backbone_lr_scale default once (0.1 for pretrained backbones, 1.0 otherwise)
 if cfgs.backbone_lr_scale is None:
     cfgs.backbone_lr_scale = 0.1 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
+
+# Set layer_decay default (0.75 for pretrained transformers, 1.0 = disabled otherwise)
+if cfgs.layer_decay is None:
+    cfgs.layer_decay = 0.75 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
+
+# Auto-enable cosine LR with warmup for pretrained backbones (unless user explicitly set cosine_lr)
+_is_pretrained_backbone = cfgs.backbone in ('transformer_pretrained', 'sonata')
+if _is_pretrained_backbone and not cfgs.cosine_lr:
+    cfgs.cosine_lr = True
 
 # =============================================
 # Distributed Training Setup
@@ -296,60 +308,118 @@ def create_model_and_optimizer():
     if cfgs.enable_stable_score:
         log_string(f"Stable score prediction enabled (lambda_stable={cfgs.lambda_stable})")
 
-    backbone_lr = cfgs.learning_rate * cfgs.backbone_lr_scale
     head_lr = cfgs.learning_rate
+    backbone_base_lr = cfgs.learning_rate * cfgs.backbone_lr_scale
+    layer_decay = cfgs.layer_decay
+    weight_decay = cfgs.weight_decay if cfgs.weight_decay > 0 else 0.0
     
-    # Separate backbone params from head params for discriminative learning rates
-    backbone_decay_params = []
-    backbone_no_decay_params = []
+    def _get_backbone_stage(name):
+        """Return the encoder stage index for a backbone parameter, or -1 for embedding/fusion.
+        
+        Sonata:  backbone.encoder.enc.enc{0-4}.block*  / backbone.encoder.embedding.*
+        PTv3:    backbone.enc.enc{0-4}.block*  / backbone.dec.dec{0-3}.* / backbone.embedding.*
+        """
+        import re
+        # Encoder stages (both Sonata and PTv3)
+        m = re.search(r'\.enc\.enc(\d+)\.', name)
+        if m:
+            return int(m.group(1))
+        # PTv3 decoder stages — treat at same depth as the encoder stage they mirror
+        # dec3 mirrors enc4, dec2 mirrors enc3, dec1 mirrors enc2, dec0 mirrors enc1
+        m = re.search(r'\.dec\.dec(\d+)\.', name)
+        if m:
+            return int(m.group(1)) + 1  # dec3→stage4, dec2→stage3, etc.
+        # Everything else (embedding, fusion_proj) → stage -1 (gets lowest LR)
+        return -1
+    
+    # Determine number of encoder stages from the backbone
+    num_enc_stages = 5  # Both Sonata and PTv3 have enc0..enc4
+    
+    # Build per-stage parameter groups for LLRD
+    # Stage LR: backbone_base_lr * layer_decay^(num_enc_stages - stage)
+    # Embedding (stage -1): backbone_base_lr * layer_decay^(num_enc_stages + 1)  (lowest)
+    # fusion_proj: treated as head (randomly initialized, like output_proj)
     head_decay_params = []
     head_no_decay_params = []
+    # Dict: stage_idx -> {'decay': [...], 'no_decay': [...]}
+    backbone_stage_params = {}
     
     for name, param in net.named_parameters():
         if not param.requires_grad:
             continue
         
-        # Check if this is a backbone parameter (excluding output_proj which is randomly initialized)
-        # output_proj is our added projection layer to match output dims - it's not pretrained
-        is_backbone = name.startswith('backbone.') and 'output_proj' not in name
+        # output_proj and fusion_proj are randomly initialized projection layers → head LR
+        is_backbone = name.startswith('backbone.') and 'output_proj' not in name and 'fusion_proj' not in name
         
-        # Check if this is a normalization parameter or bias (no weight decay)
         is_norm = any(n in name.lower() for n in ['layernorm', 'layer_norm', 'batchnorm', 'batch_norm', '.bn.', '.norm.', '.norm1.', '.norm2.'])
         is_bias = name.endswith('.bias')
         no_decay = is_norm or is_bias
         
         if is_backbone:
+            stage = _get_backbone_stage(name)
+            if stage not in backbone_stage_params:
+                backbone_stage_params[stage] = {'decay': [], 'no_decay': []}
             if no_decay:
-                backbone_no_decay_params.append(param)
+                backbone_stage_params[stage]['no_decay'].append(param)
             else:
-                backbone_decay_params.append(param)
+                backbone_stage_params[stage]['decay'].append(param)
         else:
             if no_decay:
                 head_no_decay_params.append(param)
             else:
                 head_decay_params.append(param)
     
-    # Always use parameter groups for discriminative learning rates (backbone vs heads)
-    weight_decay = cfgs.weight_decay if cfgs.weight_decay > 0 else 0.0
-    param_groups = [
-        {'params': backbone_decay_params, 'lr': backbone_lr, 'weight_decay': weight_decay, 'name': 'backbone_decay'},
-        {'params': backbone_no_decay_params, 'lr': backbone_lr, 'weight_decay': 0.0, 'name': 'backbone_no_decay'},
-        {'params': head_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_decay'},
-        {'params': head_no_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_no_decay'},
-    ]
-    # Remove empty groups
-    param_groups = [g for g in param_groups if len(g['params']) > 0]
+    # Build optimizer param groups
+    param_groups = []
+    
+    # Backbone groups with per-stage LR (LLRD)
+    for stage in sorted(backbone_stage_params.keys()):
+        if stage == -1:
+            # Embedding — deepest decay
+            stage_scale = layer_decay ** (num_enc_stages + 1)
+            stage_name = 'embedding'
+        else:
+            # Encoder/decoder stage — deeper stages get higher LR
+            stage_scale = layer_decay ** (num_enc_stages - stage)
+            stage_name = f'stage{stage}'
+        
+        stage_lr = backbone_base_lr * stage_scale
+        
+        if backbone_stage_params[stage]['decay']:
+            param_groups.append({
+                'params': backbone_stage_params[stage]['decay'],
+                'lr': stage_lr,
+                'weight_decay': weight_decay,
+                'name': f'backbone_{stage_name}_decay',
+                'backbone_stage': stage,
+            })
+        if backbone_stage_params[stage]['no_decay']:
+            param_groups.append({
+                'params': backbone_stage_params[stage]['no_decay'],
+                'lr': stage_lr,
+                'weight_decay': 0.0,
+                'name': f'backbone_{stage_name}_no_decay',
+                'backbone_stage': stage,
+            })
+    
+    # Head groups
+    if head_decay_params:
+        param_groups.append({'params': head_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_decay'})
+    if head_no_decay_params:
+        param_groups.append({'params': head_no_decay_params, 'lr': head_lr, 'weight_decay': 0.0, 'name': 'head_no_decay'})
     
     if cfgs.weight_decay > 0:
         optimizer = optim.AdamW(param_groups)
-        log_string(f"Optimizer: AdamW with weight_decay={weight_decay} (backbone only, heads=0)")
+        log_string(f"Optimizer: AdamW with weight_decay={weight_decay}")
     else:
         optimizer = optim.Adam(param_groups)
         log_string(f"Optimizer: Adam (no weight decay)")
     
-    log_string(f"Learning rates: backbone={backbone_lr:.6f} (scale={cfgs.backbone_lr_scale}), heads={head_lr:.6f}")
-    log_string(f"Param groups: backbone_decay={len(backbone_decay_params)}, backbone_no_decay={len(backbone_no_decay_params)}, "
-               f"head_decay={len(head_decay_params)}, head_no_decay={len(head_no_decay_params)}")
+    log_string(f"Learning rates: backbone_base={backbone_base_lr:.6f} (scale={cfgs.backbone_lr_scale}), "
+               f"heads={head_lr:.6f}, layer_decay={layer_decay}")
+    log_string(f"LR schedule: {'cosine + warmup(' + str(cfgs.warmup_epochs) + ' epochs)' if cfgs.cosine_lr else 'exponential (0.95^epoch)'}")
+    for pg in param_groups:
+        log_string(f"  {pg['name']}: {len(pg['params'])} params, lr={pg['lr']:.8f}")
 
     # Initialize GradScaler for AMP (to prevent small gradients from underflowing to zero)
     scaler = GradScaler(enabled=cfgs.use_amp and device.type == 'cuda')
@@ -407,14 +477,20 @@ def get_current_lr(epoch, base_lr):
 
 
 def adjust_learning_rate(optimizer, epoch):
-    """Adjust LR for all param groups, maintaining their relative ratios."""
+    """Adjust LR for all param groups, maintaining their relative LLRD ratios."""
     head_lr = get_current_lr(epoch, cfgs.learning_rate)
-    backbone_lr = get_current_lr(epoch, cfgs.learning_rate * cfgs.backbone_lr_scale)
+    backbone_base_lr = get_current_lr(epoch, cfgs.learning_rate * cfgs.backbone_lr_scale)
+    num_enc_stages = 5
     
     for param_group in optimizer.param_groups:
         group_name = param_group.get('name', '')
         if 'backbone' in group_name:
-            param_group['lr'] = backbone_lr
+            stage = param_group.get('backbone_stage', 0)
+            if stage == -1:
+                stage_scale = cfgs.layer_decay ** (num_enc_stages + 1)
+            else:
+                stage_scale = cfgs.layer_decay ** (num_enc_stages - stage)
+            param_group['lr'] = backbone_base_lr * stage_scale
         else:
             param_group['lr'] = head_lr
 
