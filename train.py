@@ -93,7 +93,7 @@ parser.add_argument('--backbone_lr_scale', type=float, default=None,
                     help='Learning rate multiplier for backbone (e.g., 0.1 for pretrained). Default: 0.1 for transformer_pretrained/sonata, 1.0 otherwise')
 parser.add_argument('--layer_decay', type=float, default=None,
                     help='Layer-wise LR decay factor for pretrained backbones. Each encoder stage gets lr * layer_decay^(num_stages - stage). '
-                         'Default: 0.75 for sonata/transformer_pretrained, 1.0 (disabled) otherwise')
+                         'Default: 0.65 for sonata/transformer_pretrained, 1.0 (disabled) otherwise')
 parser.add_argument('--enable_stable_score', action='store_true', default=False,
                     help='Enable stable score prediction to penalize grasps that may cause tipping [default: False]')
 parser.add_argument('--view_start', type=int, default=0,
@@ -125,13 +125,19 @@ parser.add_argument('--local_rank', type=int, default=-1,
 
 cfgs = parser.parse_args()
 
-# Set backbone_lr_scale default once (0.1 for pretrained backbones, 1.0 otherwise)
-if cfgs.backbone_lr_scale is None:
-    cfgs.backbone_lr_scale = 0.1 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
-
-# Set layer_decay default (0.75 for pretrained transformers, 1.0 = disabled otherwise)
+# Set layer_decay default (0.65 for pretrained transformers, 1.0 = disabled otherwise)
 if cfgs.layer_decay is None:
-    cfgs.layer_decay = 0.75 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
+    cfgs.layer_decay = 0.65 if cfgs.backbone in ('transformer_pretrained', 'sonata') else 1.0
+
+# Set backbone_lr_scale default: 1.0 when LLRD is active (it handles the scaling),
+# 0.1 for pretrained without LLRD, 1.0 for non-pretrained
+if cfgs.backbone_lr_scale is None:
+    if cfgs.layer_decay < 1.0:
+        cfgs.backbone_lr_scale = 1.0  # LLRD handles per-stage scaling
+    elif cfgs.backbone in ('transformer_pretrained', 'sonata'):
+        cfgs.backbone_lr_scale = 0.1  # flat scaling fallback
+    else:
+        cfgs.backbone_lr_scale = 1.0
 
 # Auto-enable cosine LR with warmup for pretrained backbones (unless user explicitly set cosine_lr)
 _is_pretrained_backbone = cfgs.backbone in ('transformer_pretrained', 'sonata')
