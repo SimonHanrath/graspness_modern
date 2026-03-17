@@ -105,71 +105,76 @@ class GraspNet(nn.Module):
         seed_xyz = end_points['point_clouds']              
         B, point_num, _ = seed_xyz.shape
 
-        coords = end_points['coors'].to(dtype=torch.int32)  # (M, 4) unique voxel coords in format [batch, x, y, z]
-        feats  = end_points['feats'] # (M, Cin) voxelized features
-        quantize2original = end_points['quantize2original']  # (N,) mapping from original points to voxels (N total points, values in [0, M))
-
-         # We need to normalize batch-level for proper spatial shape calculation, since spconv expects all cords to be non-negative
-        mins = coords[:, 1:].amin(dim=0)          # (3,) [min_x, min_y, min_z]
-        maxs = coords[:, 1:].amax(dim=0)          # (3,) [max_x, max_y, max_z]
-
-        coords[:, 1:] = coords[:, 1:] - mins.unsqueeze(0)
-        
-        extent = (maxs - mins + 1)
-        
-        # Ensure minimum spatial shape to handle 4 stride 2 layers (downsample by 16)
-        # TODO: Without this, flat point clouds (e.g. Z=1) would cause spatial shape reach zero error
-        MIN_SPATIAL_DIM = 16
-        
-        spatial_shape_xyz = (
-            max(int(extent[0].item()), MIN_SPATIAL_DIM),  
-            max(int(extent[1].item()), MIN_SPATIAL_DIM),  
-            max(int(extent[2].item()), MIN_SPATIAL_DIM),  
-        )
-
-        coords_bxyz = coords.contiguous().to(torch.int32)
-
-        
-        # 6-channel input: [x, y, z, r, g, b] where all are normalized
-        if (self.backbone_type in ['transformer_pretrained', 'resunet_rgb', 'resunet18_rgb']) and (feats.shape[1] == 3):
+        # PointNet2 path: operate directly on raw point cloud (not voxelized)
+        # This preserves sub-voxel geometry and uses actual point positions for ball queries
+        if self.backbone_type == 'pointnet2':
+            feats = end_points['feats']  # (M, Cin) voxelized features
+            quantize2original = end_points['quantize2original']  # (N,) mapping
             
-            coord_float = coords[:, 1:].float()  # (M, 3)
-            coord_min = coord_float.min(dim=0, keepdim=True).values
-            coord_max = coord_float.max(dim=0, keepdim=True).values
-            coord_normalized = (coord_float - coord_min) / (coord_max - coord_min + 1e-6)
-
-            feats_6ch = torch.cat([coord_normalized, feats], dim=1)  # (M, 6)
+            # Map voxelized features back to per-point features
+            # (Multiple points may share the same voxel features, that's fine)
+            point_feats = feats[quantize2original].view(B, point_num, -1)  # (B, N, Cin)
+            
+            # Use raw coordinates and per-point features directly
+            seed_features_raw = self.backbone.forward_points(seed_xyz, point_feats)  # (B, N, C)
+            seed_features = seed_features_raw.transpose(1, 2)  # (B, C, N) - match expected format
+            
+            # Store backbone output statistics for debugging
+            end_points['backbone_feat_mean'] = seed_features.mean()
+            end_points['backbone_feat_std'] = seed_features.std()
+            end_points['backbone_feat_min'] = seed_features.min()
+            end_points['backbone_feat_max'] = seed_features.max()
+            end_points['backbone_feat_abs_mean'] = seed_features.abs().mean()
         else:
-            feats_6ch = feats 
+            # Sparse convolution path (ResUNet, PTv3, Sonata, etc.)
+            coords = end_points['coors'].to(dtype=torch.int32)  # (M, 4) unique voxel coords
+            feats  = end_points['feats']  # (M, Cin) voxelized features
+            quantize2original = end_points['quantize2original']
 
+            # Normalize coords to be non-negative for spconv
+            mins = coords[:, 1:].amin(dim=0)
+            maxs = coords[:, 1:].amax(dim=0)
+            coords[:, 1:] = coords[:, 1:] - mins.unsqueeze(0)
+            extent = (maxs - mins + 1)
+            
+            MIN_SPATIAL_DIM = 16
+            spatial_shape_xyz = (
+                max(int(extent[0].item()), MIN_SPATIAL_DIM),  
+                max(int(extent[1].item()), MIN_SPATIAL_DIM),  
+                max(int(extent[2].item()), MIN_SPATIAL_DIM),  
+            )
+            coords_bxyz = coords.contiguous().to(torch.int32)
 
-        sparse_input = spconv.SparseConvTensor(
-            feats_6ch,             
-            coords_bxyz,           
-            spatial_shape_xyz,
-            B                      
-        )
-        
-        if self.debug_voxel_counts:
-            print(f"[SPCONV] Input: {sparse_input.features.shape[0]} active voxels, spatial_shape={sparse_input.spatial_shape}")
-        
-        # Pass debug flag if backbone supports it (SPconvUNet backbones)
-        if hasattr(self.backbone, 'forward') and self.backbone_type.startswith('resunet'):
-            sparse_output = self.backbone(sparse_input, debug_voxel_counts=self.debug_voxel_counts, debug_feature_stats=self.debug_feature_stats)
-        else:
-            sparse_output = self.backbone(sparse_input)
-        voxel_features = sparse_output.features  # (M, C)
-        
-        # Map voxel features back to original dense point cloud
-        # This is to mimic the approach from MinkowskiEngine
-        seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)  # (B, C, N)
+            # 6-channel input for RGB-enabled backbones
+            if (self.backbone_type in ['transformer_pretrained', 'resunet_rgb', 'resunet18_rgb']) and (feats.shape[1] == 3):
+                coord_float = coords[:, 1:].float()
+                coord_min = coord_float.min(dim=0, keepdim=True).values
+                coord_max = coord_float.max(dim=0, keepdim=True).values
+                coord_normalized = (coord_float - coord_min) / (coord_max - coord_min + 1e-6)
+                feats_6ch = torch.cat([coord_normalized, feats], dim=1)
+            else:
+                feats_6ch = feats 
 
-        # Store backbone output statistics for debugging
-        end_points['backbone_feat_mean'] = seed_features.mean()
-        end_points['backbone_feat_std'] = seed_features.std()
-        end_points['backbone_feat_min'] = seed_features.min()
-        end_points['backbone_feat_max'] = seed_features.max()
-        end_points['backbone_feat_abs_mean'] = seed_features.abs().mean()
+            sparse_input = spconv.SparseConvTensor(feats_6ch, coords_bxyz, spatial_shape_xyz, B)
+            
+            if self.debug_voxel_counts:
+                print(f"[SPCONV] Input: {sparse_input.features.shape[0]} active voxels, spatial_shape={sparse_input.spatial_shape}")
+            
+            if hasattr(self.backbone, 'forward') and self.backbone_type.startswith('resunet'):
+                sparse_output = self.backbone(sparse_input, debug_voxel_counts=self.debug_voxel_counts, debug_feature_stats=self.debug_feature_stats)
+            else:
+                sparse_output = self.backbone(sparse_input)
+            voxel_features = sparse_output.features
+            
+            # Map voxel features back to original dense point cloud
+            seed_features = voxel_features[quantize2original].view(B, point_num, -1).transpose(1, 2)
+
+            # Store backbone output statistics for debugging
+            end_points['backbone_feat_mean'] = seed_features.mean()
+            end_points['backbone_feat_std'] = seed_features.std()
+            end_points['backbone_feat_min'] = seed_features.min()
+            end_points['backbone_feat_max'] = seed_features.max()
+            end_points['backbone_feat_abs_mean'] = seed_features.abs().mean()
 
         end_points = self.graspable(seed_features, end_points)
         seed_features_flipped = seed_features.transpose(1, 2)  # B*Ns*feat_dim

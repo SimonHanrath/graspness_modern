@@ -24,23 +24,23 @@ class PointNet2Backbone(nn.Module):
     """
     PointNet++ encoder-decoder backbone (enhanced version).
     
-    Takes sparse voxel tensor, processes internally as point cloud,
-    returns sparse tensor with same coordinates and output features.
-    
-    Uses FPS to subsample input to max_input_points before processing,
-    then interpolates features back to all original points.
+    Takes raw point cloud via forward_points() [preferred], or sparse voxel 
+    tensor via forward() [legacy, for backwards compatibility].
     
     Architecture improvements over original:
     - 4 SA layers (vs 3) for deeper feature learning matching ResUNet depth
     - Wider MLPs (64/128 base channels vs 32/64) for more capacity
-    - Higher max_input_points (8192 vs 4096) to retain more geometric detail  
     - Larger radii progression to capture global scene context
+    
+    Note: The SA layers perform their own internal FPS subsampling 
+    (15000 -> 1024 -> 256 -> 64 -> 16), which is the standard PointNet++ design.
+    All input points receive features via the FP (feature propagation) decoder.
     """
     
     def __init__(self, in_channels=3, out_channels=512, max_input_points=8192):
         super().__init__()
         self.out_channels = out_channels
-        self.max_input_points = max_input_points
+        self.max_input_points = max_input_points  # Only used in legacy forward() path
         
         # Encoder - 4 SA layers with wider MLPs
         # Subsampling: 8192 -> 1024 -> 256 -> 64 -> 16
@@ -77,7 +77,7 @@ class PointNet2Backbone(nn.Module):
             use_xyz=True
         )
         
-        # Decoder - 4 FP layers propagating back to max_input_points resolution
+        # Decoder - 4 FP layers propagating features back to input resolution
         self.fp4 = PointnetFPModule(mlp=[1024 + 1024, 512, 512])  # sa4 + sa3 features
         self.fp3 = PointnetFPModule(mlp=[512 + 512, 512, 512])    # fp4 + sa2 features
         self.fp2 = PointnetFPModule(mlp=[512 + 256, 256, 256])    # fp3 + sa1 features
@@ -90,6 +90,46 @@ class PointNet2Backbone(nn.Module):
             nn.Conv1d(256, out_channels, 1),
             nn.BatchNorm1d(out_channels)
         )
+    
+    def forward_points(self, xyz: torch.Tensor, feats: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass on raw point cloud (NOT voxelized).
+        
+        This is the preferred interface for PointNet++ - it operates on actual
+        point positions rather than voxel centers, preserving sub-voxel geometry.
+        
+        All input points are processed directly through the network (no FPS 
+        pre-subsampling). The SA layers handle their own internal subsampling
+        via FPS, which is the standard PointNet++ design.
+        
+        Args:
+            xyz: (B, N, 3) point coordinates in meters
+            feats: (B, N, C) per-point features (e.g., RGB or ones)
+            
+        Returns:
+            (B, N, out_channels) per-point features
+        """
+        # PointNet++ expects features as (B, C, N)
+        feats = feats.transpose(1, 2)
+        
+        # Encoder - 4 SA layers (each does its own FPS internally)
+        # 15000 -> 1024 -> 256 -> 64 -> 16
+        l0_xyz, l0_feats = xyz, feats
+        l1_xyz, l1_feats = self.sa1(l0_xyz, l0_feats)
+        l2_xyz, l2_feats = self.sa2(l1_xyz, l1_feats)
+        l3_xyz, l3_feats = self.sa3(l2_xyz, l2_feats)
+        l4_xyz, l4_feats = self.sa4(l3_xyz, l3_feats)
+        
+        # Decoder - 4 FP layers (propagate features back to full resolution)
+        # 16 -> 64 -> 256 -> 1024 -> 15000
+        l3_feats = self.fp4(l3_xyz, l4_xyz, l3_feats, l4_feats)
+        l2_feats = self.fp3(l2_xyz, l3_xyz, l2_feats, l3_feats)
+        l1_feats = self.fp2(l1_xyz, l2_xyz, l1_feats, l2_feats)
+        l0_feats = self.fp1(l0_xyz, l1_xyz, l0_feats, l1_feats)
+        
+        # Final projection
+        out_feats = self.final_mlp(l0_feats)  # (B, out_channels, N)
+        return out_feats.transpose(1, 2)  # (B, N, out_channels)
     
     def forward(self, sparse_input: spconv.SparseConvTensor) -> spconv.SparseConvTensor:
         feats = sparse_input.features  # (M, C)
