@@ -195,6 +195,10 @@ class GraspNetDataset(Dataset):
 
         if split == 'train':
             self.sceneIds = list(range(0,100))
+        elif split == 'train_reduced':
+            self.sceneIds = list(range(0, 95))  # 95 scenes for training (hold out 5 for val)
+        elif split == 'val_train':
+            self.sceneIds = list(range(95, 100))  # 5 held-out scenes from train for validation
         elif split == 'train_all':
             self.sceneIds = list(range(0, 190))  # All 190 scenes for training
         elif split == 'val':

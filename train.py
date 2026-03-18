@@ -118,6 +118,8 @@ parser.add_argument('--debug_feature_stats', action='store_true', default=False,
                     help='Print mean/std feature statistics at each backbone stage for first forward pass [default: False]')
 parser.add_argument('--no_translation_aug', action='store_true', default=False,
                     help='Disable random translation in data augmentation (paper uses no translation) [default: False]')
+parser.add_argument('--use_val', action='store_true', default=False,
+                    help='Enable validation: use train_reduced (95 scenes) for training and val_train (5 scenes) for validation [default: False]')
 # DDP arguments (set automatically by torchrun, but can be overridden)
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='Local rank for distributed training (set by torchrun)')
@@ -246,12 +248,16 @@ def create_dataloaders():
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
     use_rgb = (cfgs.backbone in ['transformer_pretrained', 'resunet_rgb'])
-    train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=cfgs.train_split,
+    
+    # Determine training split (use train_reduced if validation is enabled)
+    actual_train_split = 'train_reduced' if cfgs.use_val and cfgs.train_split == 'train' else cfgs.train_split
+    
+    train_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split=actual_train_split,
                                     num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
                                     remove_outlier=True, augment=True, load_label=True, use_rgb=use_rgb,
                                     enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end,
                                     include_floor=cfgs.include_floor, augment_translation=not cfgs.no_translation_aug)
-    log_string(f'train dataset length: {len(train_dataset)} (split: {cfgs.train_split})')
+    log_string(f'train dataset length: {len(train_dataset)} (split: {actual_train_split})')
 
 
     # For overfitting test, use only 1 sample repeated 256 times
@@ -285,7 +291,23 @@ def create_dataloaders():
                                   worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
     log_string('train dataloader length: ' + str(len(train_dataloader)))
     
-    return train_dataloader, train_sampler
+    # Create validation dataloader if enabled
+    val_dataloader = None
+    if cfgs.use_val:
+        val_dataset = GraspNetDataset(cfgs.dataset_root, grasp_labels=grasp_labels, camera=cfgs.camera, split='val_train',
+                                      num_points=cfgs.num_point, voxel_size=cfgs.voxel_size,
+                                      remove_outlier=True, augment=False, load_label=True, use_rgb=use_rgb,
+                                      enable_stable_score=cfgs.enable_stable_score, view_start=cfgs.view_start, view_end=cfgs.view_end,
+                                      include_floor=cfgs.include_floor, augment_translation=False)
+        log_string(f'val dataset length: {len(val_dataset)} (split: val_train, scenes 95-99)')
+        
+        val_dataloader = DataLoader(val_dataset, batch_size=cfgs.batch_size,
+                                    shuffle=False, num_workers=cfgs.num_workers, pin_memory=True,
+                                    persistent_workers=(cfgs.persistent_workers and cfgs.num_workers > 0),
+                                    worker_init_fn=my_worker_init_fn, collate_fn=spconv_collate_fn)
+        log_string('val dataloader length: ' + str(len(val_dataloader)))
+    
+    return train_dataloader, train_sampler, val_dataloader
 
 
 def create_model_and_optimizer():
@@ -635,8 +657,56 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     return epoch_stat_dict['loss/overall_loss'] / num_batches if 'loss/overall_loss' in epoch_stat_dict else 0
 
 
+@torch.no_grad()
+def validate_one_epoch(net, device, val_dataloader, val_writer):
+    """Run validation and return average loss."""
+    stat_dict = {}
+    net.eval()
+    
+    data_iter = tqdm(enumerate(val_dataloader), desc='Validation',
+                     disable=not is_main_process(), total=len(val_dataloader))
+    
+    for batch_idx, batch_data_label in data_iter:
+        # Transfer to GPU
+        for key in batch_data_label:
+            if 'list' in key:
+                for i in range(len(batch_data_label[key])):
+                    for j in range(len(batch_data_label[key][i])):
+                        batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device, non_blocking=True)
+            else:
+                batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
+        
+        # Forward pass
+        with autocast(enabled=cfgs.use_amp, device_type=device.type):
+            end_points = net(batch_data_label)
+            loss, end_points = get_loss(end_points,
+                                        enable_stable_score=cfgs.enable_stable_score,
+                                        lambda_stable=cfgs.lambda_stable)
+        
+        # Accumulate statistics
+        for key in end_points:
+            if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
+                if key not in stat_dict:
+                    stat_dict[key] = 0
+                stat_dict[key] += end_points[key].item()
+    
+    # Compute averages and log
+    num_batches = len(val_dataloader)
+    log_string(' ---- Validation Results ----')
+    for key in sorted(stat_dict.keys()):
+        avg_value = stat_dict[key] / num_batches
+        log_string('val %s: %f' % (key, avg_value))
+        if is_main_process() and val_writer is not None:
+            val_writer.add_scalar(key, avg_value, EPOCH_CNT)
+    
+    if is_main_process() and val_writer is not None:
+        val_writer.flush()
+    
+    return stat_dict.get('loss/overall_loss', 0) / num_batches
+
+
 def train(start_epoch, net, optimizer, scaler, device, train_dataloader,
-          train_writer, train_sampler=None):
+          train_writer, train_sampler=None, val_dataloader=None, val_writer=None):
     global EPOCH_CNT
     
     for epoch in range(start_epoch, cfgs.max_epoch):
@@ -662,6 +732,11 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader,
         np.random.seed()
         train_loss = train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writer)
         
+        # Run validation if enabled
+        if val_dataloader is not None:
+            val_loss = validate_one_epoch(net, device, val_dataloader, val_writer)
+            log_string(f'Epoch {epoch} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
+        
         # Save regular checkpoint (only from main process)
         if is_main_process():
             # Get the underlying model if wrapped in DDP
@@ -674,7 +749,7 @@ def train(start_epoch, net, optimizer, scaler, device, train_dataloader,
 
 if __name__ == '__main__':
     # Create dataloaders (each process creates its own for DDP)
-    TRAIN_DATALOADER, TRAIN_SAMPLER= create_dataloaders()
+    TRAIN_DATALOADER, TRAIN_SAMPLER, VAL_DATALOADER = create_dataloaders()
     
     # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
@@ -682,20 +757,22 @@ if __name__ == '__main__':
     # TensorBoard Visualizers (only main process writes to TensorBoard)
     if is_main_process():
         TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
-        
+        VAL_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'val')) if cfgs.use_val else None
     else:
         # Create dummy writers for non-main processes (won't be used but simplifies code)
         TRAIN_WRITER = None
-        
+        VAL_WRITER = None
     
     # Start training
     try:
         train(start_epoch, net, optimizer, scaler, device, TRAIN_DATALOADER,
-              TRAIN_WRITER, TRAIN_SAMPLER)
+              TRAIN_WRITER, TRAIN_SAMPLER, VAL_DATALOADER, VAL_WRITER)
     finally:
         # Ensure TensorBoard writers are properly closed
         if is_main_process():
             TRAIN_WRITER.close()
-           
+            if VAL_WRITER is not None:
+                VAL_WRITER.close()
+        
         # Clean up distributed training
         cleanup_distributed()
