@@ -1,5 +1,10 @@
 import os
 import sys
+
+# Fix spconv tuning failures on different GPU architectures
+# Mode 0 = disable auto-tuning, use reliable GEMM fallback
+os.environ.setdefault("SPCONV_ALGO_SELECT_MODE", "0")
+
 import numpy as np
 from datetime import datetime
 import argparse
@@ -548,14 +553,25 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
             else:
                 batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
 
+        # Skip empty batches (0 voxels after sparse quantization)
+        if 'coors' in batch_data_label and batch_data_label['coors'].shape[0] == 0:
+            log_string(f'[Train] Skipping batch {batch_idx}: empty sparse tensor (0 voxels)')
+            continue
+
         # Forward pass with autocast for mixed precision
-        with autocast(enabled=cfgs.use_amp, device_type=device.type):
-            end_points = net(batch_data_label)
-            loss, end_points = get_loss(end_points, 
-                                        enable_stable_score=cfgs.enable_stable_score,
-                                        lambda_stable=cfgs.lambda_stable)
-            # Scale loss for gradient accumulation
-            loss = loss / cfgs.accumulation_steps
+        try:
+            with autocast(enabled=cfgs.use_amp, device_type=device.type):
+                end_points = net(batch_data_label)
+                loss, end_points = get_loss(end_points, 
+                                            enable_stable_score=cfgs.enable_stable_score,
+                                            lambda_stable=cfgs.lambda_stable)
+                # Scale loss for gradient accumulation
+                loss = loss / cfgs.accumulation_steps
+        except RuntimeError as e:
+            if "can't find suitable algorithm" in str(e) or "assert faild" in str(e):
+                log_string(f'[Train] Skipping batch {batch_idx}: spconv error - {e}')
+                continue
+            raise  # Re-raise other RuntimeErrors
         
         # Debug: Print backbone and graspness statistics for first batch of first epoch
         if batch_idx == 0 and EPOCH_CNT == 0 and is_main_process():
@@ -676,12 +692,23 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
             else:
                 batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
         
-        # Forward pass
-        with autocast(enabled=cfgs.use_amp, device_type=device.type):
-            end_points = net(batch_data_label)
-            loss, end_points = get_loss(end_points,
-                                        enable_stable_score=cfgs.enable_stable_score,
-                                        lambda_stable=cfgs.lambda_stable)
+        # Skip empty batches (0 voxels after sparse quantization)
+        if 'coors' in batch_data_label and batch_data_label['coors'].shape[0] == 0:
+            log_string(f'[Val] Skipping batch {batch_idx}: empty sparse tensor (0 voxels)')
+            continue
+        
+        # Forward pass with error handling for spconv edge cases
+        try:
+            with autocast(enabled=cfgs.use_amp, device_type=device.type):
+                end_points = net(batch_data_label)
+                loss, end_points = get_loss(end_points,
+                                            enable_stable_score=cfgs.enable_stable_score,
+                                            lambda_stable=cfgs.lambda_stable)
+        except RuntimeError as e:
+            if "can't find suitable algorithm" in str(e) or "assert faild" in str(e):
+                log_string(f'[Val] Skipping batch {batch_idx}: spconv error - {e}')
+                continue
+            raise  # Re-raise other RuntimeErrors
         
         # Accumulate statistics
         for key in end_points:
