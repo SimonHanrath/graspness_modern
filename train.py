@@ -1,10 +1,6 @@
 import os
 import sys
 
-# Fix spconv tuning failures on different GPU architectures
-# Mode 0 = disable auto-tuning, use reliable GEMM fallback
-os.environ.setdefault("SPCONV_ALGO_SELECT_MODE", "0")
-
 import numpy as np
 from datetime import datetime
 import argparse
