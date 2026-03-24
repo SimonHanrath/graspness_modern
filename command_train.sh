@@ -1,13 +1,15 @@
 python train.py \
     --dataset_root /datasets/graspnet \
-    --camera kinect \
+    --camera realsense \
     --model_name gsnet_dev \
     --log_dir logs/gsnet_dev \
     --learning_rate 0.001 \
     --max_epoch 20 \
     --batch_size 1 \
-    --backbone resunet \
-    --single_sample \
+    --backbone resunet_rgb \
     --num_point 15000 \
-    --train_split train \
+    --train_split train_reduced \
+    --graspness_threshold 0.01 \
+    --no_translation_aug \
+    --use_val \
     --single_sample

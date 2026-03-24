@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-AI slop !!!!
+AI generated !!!!
 Simple grasp visualization script.
 Visualizes top-N grasps for a model on a scene, overlaid on the RGB image.
 Works with both vanilla models and models with stable score heads.
 
 Usage:
-    python experiments/stable_score/visualize_grasps_simple.py \
-        --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch10.tar \
+    python model_analysis/visualize_grasps_simple.py \
+        --checkpoint_path logs/gsnet_resunet_realsense_t001_n15_floorpoints/gsnet_resunet_epoch10.tar \
         --scene 0100 --index 0000 --num_grasps 10
 """
 
@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument('--checkpoint_path', required=True,
                         help='Path to model checkpoint')
     parser.add_argument('--dump_dir', default=None,
-                        help='Directory to save outputs (default: same folder as script)')
+                        help='Directory to save outputs (default: model_analysis/dumps)')
     parser.add_argument('--seed_feat_dim', default=512, type=int,
                         help='Point-wise feature dimension')
     parser.add_argument('--camera', default='realsense', choices=['realsense', 'kinect'],
@@ -70,6 +70,8 @@ def parse_args():
                         help='Show object centers of gravity')
     parser.add_argument('--model_name', type=str, default=None,
                         help='Model name for title (default: derived from checkpoint path)')
+    parser.add_argument('--include_floor', action='store_true', default=False,
+                        help='Include floor/table points in inference (for models trained with --include_floor)')
     return parser.parse_args()
 
 
@@ -104,11 +106,16 @@ def load_scene_data(args):
     cloud = create_point_cloud_from_depth_image(depth, camera, organized=True)
     
     depth_mask = (depth > 0)
-    camera_poses = np.load(os.path.join(root, 'scenes', scene_id, camera_type, 'camera_poses.npy'))
-    align_mat = np.load(os.path.join(root, 'scenes', scene_id, camera_type, 'cam0_wrt_table.npy'))
-    trans = np.dot(align_mat, camera_poses[int(index)])
-    workspace_mask = get_workspace_mask(cloud, seg, trans=trans, organized=True, outlier=0.02)
-    mask = (depth_mask & workspace_mask)
+    if args.include_floor:
+        # Keep floor/table points - only use depth mask
+        mask = depth_mask
+    else:
+        # Remove outliers/floor points using workspace mask
+        camera_poses = np.load(os.path.join(root, 'scenes', scene_id, camera_type, 'camera_poses.npy'))
+        align_mat = np.load(os.path.join(root, 'scenes', scene_id, camera_type, 'cam0_wrt_table.npy'))
+        trans = np.dot(align_mat, camera_poses[int(index)])
+        workspace_mask = get_workspace_mask(cloud, seg, trans=trans, organized=True, outlier=0.02)
+        mask = (depth_mask & workspace_mask)
     
     cloud_masked = cloud[mask]
     colors_masked = rgb.reshape(-1, 3)[mask.flatten()]
@@ -408,7 +415,7 @@ def main():
     args = parse_args()
     
     if args.dump_dir is None:
-        args.dump_dir = os.path.join(SCRIPT_DIR, 'visualization_output')
+        args.dump_dir = os.path.join(SCRIPT_DIR, 'dumps')
     os.makedirs(args.dump_dir, exist_ok=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

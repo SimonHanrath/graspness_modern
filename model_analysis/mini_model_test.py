@@ -8,11 +8,11 @@ Basically a script that executes test.py sequentially on the 3 mini test sets, w
 
 Usage:
     python model_analysis/mini_model_test.py \
-        --checkpoint_path logs/gsnet_sonata_t01_n15_lrscale01_correct/gsnet_sonata_epoch10.tar \
-        --model_name "sonata lr scale 0.1 test 0.8" \
-        --backbone sonata \
+        --checkpoint_path logs/cluster_100scenes_13epochs_realsense/gsnet_dev_epoch04.tar \
+        --model_name "resunet realsense 4 epochs lr scale 0.01 test 0.8" \
+        --backbone resunet \
         --friction 0.8 \
-        --graspness_threshold 0.1
+        --graspness_threshold 0.01
 """
 
 import subprocess
@@ -33,7 +33,7 @@ NUM_POINT = 15000
 BATCH_SIZE = 1
 
 # Test sets
-TEST_SETS =["test_seen", "test_similar", "test_novel"]
+TEST_SETS =["test_seen_mini", "test_similar_mini", "test_novel_mini"]
 
 
 def parse_args():
@@ -69,6 +69,8 @@ def parse_args():
                         help='Number of samples for cloud crop in GraspNet [default: 16]')
     parser.add_argument('--include_floor', action='store_true', default=False,
                         help='Include floor/table points in inference (for models trained with --include_floor)')
+    parser.add_argument('--seed_feat_dim', type=int, default=512,
+                        help='Point wise feature dim [default: 512]')
     return parser.parse_args()
 
 
@@ -131,6 +133,9 @@ def run_test(args, test_set, test_idx=1, total_tests=1):
     # Forward include_floor
     if args.include_floor:
         cmd.append("--include_floor")
+    
+    # Forward seed_feat_dim
+    cmd.extend(["--seed_feat_dim", str(args.seed_feat_dim)])
     
     print(f"\n{'='*80}", flush=True)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting test {test_idx}/{total_tests}", flush=True)

@@ -19,11 +19,9 @@ Usage:
 
     # Evaluate specific epochs:
     python model_analysis/mini_loss_test.py \
-        --log_dir logs/backbone_experiments/gsnet_pointnet2bigger_t01_n15 \
-        --epochs 11 12 15 \
-        --backbone pointnet2 \
-        --graspness_threshold 0.1 \
-        --split test_seen_mini
+        --log_dir logs/gsnet_sonata_t01_n15_lrscale01_correct \
+        --epochs 5 10 15 \
+        --backbone sonata
         
     # Compare across multiple test splits:
     python model_analysis/mini_loss_test.py \

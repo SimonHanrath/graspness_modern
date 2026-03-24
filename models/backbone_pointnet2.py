@@ -70,7 +70,7 @@ class PointNet2Backbone(nn.Module):
         
         # SA4 bottleneck - captures global scene context
         self.sa4 = PointnetSAModuleMSG(
-            npoint=16,
+            npoint=64,  # Increased from 16 for better spatial resolution in decoder
             radii=[0.16, 0.32],
             nsamples=[32, 32],
             mlps=[[1024, 512, 512], [1024, 512, 512]],

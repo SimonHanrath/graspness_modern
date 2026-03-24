@@ -1,4 +1,5 @@
 """
+AI generated!!!!
 Compute the "ranking error" metric from the GSNet paper.
 
 Given ground-truth and predicted graspness scores in [0,1]:
@@ -58,6 +59,8 @@ parser.add_argument('--view_start', type=int, default=0,
                     help='Starting view index (inclusive) for each scene [default: 0]')
 parser.add_argument('--view_end', type=int, default=256,
                     help='Ending view index (exclusive) for each scene [default: 256]')
+parser.add_argument('--output_json', type=str, default=os.path.join(SCRIPT_DIR, 'dumps', 'test_ranking_error_results.json'),
+                    help='Path to save results as JSON (default: model_analysis/dumps/test_ranking_error_results.json)')
 cfgs = parser.parse_args()
 
 
@@ -286,12 +289,32 @@ def evaluate_ranking_error():
     # Also print in a compact format
     print(f"\nSummary: e_p_rank={e_p_rank:.4f}, e_v_rank={e_v_rank:.4f}")
     
-    return {
+    results = {
         'e_p_rank': e_p_rank,
         'e_v_rank': e_v_rank,
         'total_point_count': total_point_count,
         'total_view_count': total_view_count,
     }
+    
+    # Save to JSON
+    if cfgs.output_json:
+        import json
+        os.makedirs(os.path.dirname(cfgs.output_json), exist_ok=True)
+        output_data = {
+            'checkpoint': cfgs.checkpoint_path,
+            'split': cfgs.split,
+            'camera': cfgs.camera,
+            'num_bins': K,
+            'view_range': [cfgs.view_start, cfgs.view_end],
+            'num_samples': min(num_samples, len(test_dataloader)),
+            'time_seconds': toc - tic,
+            'results': results,
+        }
+        with open(cfgs.output_json, 'w') as f:
+            json.dump(output_data, f, indent=2)
+        print(f"\nResults saved to: {cfgs.output_json}")
+    
+    return results
 
 
 if __name__ == '__main__':

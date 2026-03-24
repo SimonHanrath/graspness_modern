@@ -7,21 +7,19 @@
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00                 # ~4 hours for 100 scenes, buffer for safety
 #SBATCH --output=logs/gen_graspness_full-%j.out
-#SBATCH --array=0-3                     # 4 jobs to parallelize (0-49, 50-99, 100-149, 150-189)
+#SBATCH --array=0-7                     # 8 jobs: 0-3 training, 4-7 test
 
 # =============================================================================
 # Generate graspness_full labels (without workspace masking)
 # 
-# This runs as an array job with 4 tasks, each processing ~50 scenes:
-#   Task 0: scenes 0-49   (training)
-#   Task 1: scenes 50-99  (training)
-#   Task 2: scenes 100-149 (test)
-#   Task 3: scenes 150-189 (test)
+# This runs as an array job with 8 tasks:
+#   Tasks 0-3: training scenes (0-99), 25 scenes each
+#   Tasks 4-7: test scenes (100-189), ~22 scenes each
 #
-# Total time: ~1-2 hours per task (4 tasks in parallel = ~2 hours wall time)
+# Total time: ~30-60 min per task
 #
-# To run only training scenes (0-99), use: --array=0-1
-# To run only test scenes (100-189), use: --array=2-3
+# To run only training scenes (0-99), use: --array=0-3
+# To run only test scenes (100-189), use: --array=4-7
 # =============================================================================
 
 set -euo pipefail
@@ -34,11 +32,17 @@ DATA_DIR=/mnt/lustre/work/zell/zto428/datasets/graspnet
 CAMERA_TYPE="realsense"
 
 # Define scene ranges for each array task
+# Tasks 0-3: training scenes (0-99), 25 scenes each
+# Tasks 4-7: test scenes (100-189), ~22 scenes each
 case $SLURM_ARRAY_TASK_ID in
-    0) SCENE_START=0;   SCENE_END=50  ;;
-    1) SCENE_START=50;  SCENE_END=100 ;;
-    2) SCENE_START=100; SCENE_END=150 ;;
-    3) SCENE_START=150; SCENE_END=190 ;;
+    0) SCENE_START=0;   SCENE_END=25  ;;
+    1) SCENE_START=25;  SCENE_END=50  ;;
+    2) SCENE_START=50;  SCENE_END=75  ;;
+    3) SCENE_START=75;  SCENE_END=100 ;;
+    4) SCENE_START=100; SCENE_END=122 ;;
+    5) SCENE_START=122; SCENE_END=145 ;;
+    6) SCENE_START=145; SCENE_END=167 ;;
+    7) SCENE_START=167; SCENE_END=190 ;;
     *) echo "Invalid array task ID"; exit 1 ;;
 esac
 
@@ -70,7 +74,7 @@ singularity exec --nv \
       --camera_type ${CAMERA_TYPE} \
       --scene_start ${SCENE_START} \
       --scene_end ${SCENE_END} \
-      --chunk 10000
+      --chunk 100000
     "
 
 echo "Done! Task $SLURM_ARRAY_TASK_ID completed scenes $SCENE_START to $SCENE_END"

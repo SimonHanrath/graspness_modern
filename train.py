@@ -720,7 +720,7 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
         avg_value = stat_dict[key] / num_batches
         log_string('val %s: %f' % (key, avg_value))
         if is_main_process() and val_writer is not None:
-            val_writer.add_scalar(key, avg_value, EPOCH_CNT)
+           val_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
     
     if is_main_process() and val_writer is not None:
         val_writer.flush()
