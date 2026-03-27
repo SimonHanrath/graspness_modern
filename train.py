@@ -1,9 +1,11 @@
 import os
 import sys
 
-# Fix spconv algorithm tuner issue on Ada GPUs (L40S, RTX 4090, etc.)
-# Without this, validation may fail with "can't find suitable algorithm" errors
-os.environ.setdefault('SPCONV_ALGO', 'MaskImplicitGemm')
+# Fix spconv algorithm tuner crash on Ada GPUs (L40S, RTX 4090, etc.)
+# Must be set BEFORE any spconv import
+os.environ.setdefault('SPCONV_ALGO', 'Native')  # Use native algorithm, not implicit gemm
+os.environ.setdefault('CUMM_CUDA_ARCH_LIST', '8.9')  # Ada Lovelace compute capability
+os.environ.setdefault('SPCONV_DISABLE_JIT', '1')  # Disable JIT to avoid profiling crashes
 
 import numpy as np
 from datetime import datetime
@@ -813,31 +815,6 @@ if __name__ == '__main__':
     
     # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
-    
-    # DIAGNOSTIC: Test validation before training to isolate spconv issues
-    if VAL_DATALOADER is not None and is_main_process():
-        log_string("=== DIAGNOSTIC: Testing validation forward pass BEFORE training ===")
-        net.eval()
-        with torch.no_grad():
-            for i, batch in enumerate(VAL_DATALOADER):
-                if i >= 3:  # Test first 3 batches only
-                    break
-                for key in batch:
-                    if 'list' not in key:
-                        batch[key] = batch[key].to(device)
-                    else:
-                        for j in range(len(batch[key])):
-                            for k in range(len(batch[key][j])):
-                                batch[key][j][k] = batch[key][j][k].to(device)
-                log_string(f"  Val batch {i}: {batch['coors'].shape[0]} voxels")
-                try:
-                    with autocast(enabled=cfgs.use_amp, device_type=device.type):
-                        end_points = net(batch)
-                    log_string(f"  Val batch {i}: SUCCESS")
-                except RuntimeError as e:
-                    log_string(f"  Val batch {i}: FAILED - {e}")
-        net.train()
-        log_string("=== END DIAGNOSTIC ===")
     
     # TensorBoard Visualizers (only main process writes to TensorBoard)
     if is_main_process():
