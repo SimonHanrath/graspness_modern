@@ -553,10 +553,14 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
             else:
                 batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
 
-        # Skip empty batches (0 voxels after sparse quantization)
-        if 'coors' in batch_data_label and batch_data_label['coors'].shape[0] == 0:
-            log_string(f'[Train] Skipping batch {batch_idx}: empty sparse tensor (0 voxels)')
-            continue
+        # Skip batches with too few voxels (would cause spconv errors after 16x downsampling)
+        # ResUNet has 4 stride-2 convs, so we need enough voxels to survive downsampling
+        MIN_VOXELS = 64
+        if 'coors' in batch_data_label:
+            num_voxels = batch_data_label['coors'].shape[0]
+            if num_voxels < MIN_VOXELS:
+                log_string(f'[Train] Skipping batch {batch_idx}: too few voxels ({num_voxels} < {MIN_VOXELS})')
+                continue
 
         # Forward pass with autocast for mixed precision
         try:
@@ -677,6 +681,18 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
 def validate_one_epoch(net, device, val_dataloader, val_writer):
     """Run validation and return average loss."""
     stat_dict = {}
+    successful_batches = 0
+    skipped_batches = 0
+    
+    # Try to clear spconv's algorithm cache to avoid stale tuning results
+    try:
+        import spconv.pytorch as spconv
+        if hasattr(spconv, 'algocore'):
+            spconv.algocore.clear_cache()
+            log_string('[Val] Cleared spconv algorithm cache')
+    except Exception as e:
+        pass  # Older spconv versions may not have this
+    
     net.eval()
     
     data_iter = tqdm(enumerate(val_dataloader), desc='Validation',
@@ -692,10 +708,19 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
             else:
                 batch_data_label[key] = batch_data_label[key].to(device, non_blocking=True)
         
-        # Skip empty batches (0 voxels after sparse quantization)
-        if 'coors' in batch_data_label and batch_data_label['coors'].shape[0] == 0:
-            log_string(f'[Val] Skipping batch {batch_idx}: empty sparse tensor (0 voxels)')
-            continue
+        # Skip batches with too few voxels (would cause spconv errors after 16x downsampling)
+        # ResUNet has 4 stride-2 convs, so we need enough voxels to survive downsampling
+        MIN_VOXELS = 64
+        if 'coors' in batch_data_label:
+            num_voxels = batch_data_label['coors'].shape[0]
+            if num_voxels < MIN_VOXELS:
+                log_string(f'[Val] Skipping batch {batch_idx}: too few voxels ({num_voxels} < {MIN_VOXELS})')
+                skipped_batches += 1
+                continue
+        
+        # Debug: Log voxel count for first few batches and any that fail
+        if batch_idx < 5:
+            log_string(f'[Val Debug] Batch {batch_idx}: {batch_data_label["coors"].shape[0]} voxels')
         
         # Forward pass with error handling for spconv edge cases
         try:
@@ -706,10 +731,12 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
                                             lambda_stable=cfgs.lambda_stable)
         except RuntimeError as e:
             if "can't find suitable algorithm" in str(e) or "assert faild" in str(e):
-                log_string(f'[Val] Skipping batch {batch_idx}: spconv error - {e}')
+                log_string(f'[Val] Skipping batch {batch_idx}: spconv error ({batch_data_label["coors"].shape[0]} voxels) - {e}')
+                skipped_batches += 1
                 continue
             raise  # Re-raise other RuntimeErrors
         
+        successful_batches += 1
         # Accumulate statistics
         for key in end_points:
             if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -718,10 +745,16 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
                 stat_dict[key] += end_points[key].item()
     
     # Compute averages and log
-    num_batches = len(val_dataloader)
+    total_batches = len(val_dataloader)
     log_string(' ---- Validation Results ----')
+    log_string(f'Processed {successful_batches}/{total_batches} batches (skipped {skipped_batches})')
+    
+    if successful_batches == 0:
+        log_string('WARNING: All validation batches failed! Check data/model compatibility.')
+        return float('inf')
+    
     for key in sorted(stat_dict.keys()):
-        avg_value = stat_dict[key] / num_batches
+        avg_value = stat_dict[key] / successful_batches  # Divide by successful, not total
         log_string('val %s: %f' % (key, avg_value))
         if is_main_process() and val_writer is not None:
            val_writer.add_scalar('epoch_' + key, avg_value, EPOCH_CNT)
@@ -729,7 +762,7 @@ def validate_one_epoch(net, device, val_dataloader, val_writer):
     if is_main_process() and val_writer is not None:
         val_writer.flush()
     
-    return stat_dict.get('loss/overall_loss', 0) / num_batches
+    return stat_dict.get('loss/overall_loss', 0) / successful_batches
 
 
 def train(start_epoch, net, optimizer, scaler, device, train_dataloader,
@@ -780,6 +813,31 @@ if __name__ == '__main__':
     
     # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
+    
+    # DIAGNOSTIC: Test validation before training to isolate spconv issues
+    if VAL_DATALOADER is not None and is_main_process():
+        log_string("=== DIAGNOSTIC: Testing validation forward pass BEFORE training ===")
+        net.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(VAL_DATALOADER):
+                if i >= 3:  # Test first 3 batches only
+                    break
+                for key in batch:
+                    if 'list' not in key:
+                        batch[key] = batch[key].to(device)
+                    else:
+                        for j in range(len(batch[key])):
+                            for k in range(len(batch[key][j])):
+                                batch[key][j][k] = batch[key][j][k].to(device)
+                log_string(f"  Val batch {i}: {batch['coors'].shape[0]} voxels")
+                try:
+                    with autocast(enabled=cfgs.use_amp, device_type=device.type):
+                        end_points = net(batch)
+                    log_string(f"  Val batch {i}: SUCCESS")
+                except RuntimeError as e:
+                    log_string(f"  Val batch {i}: FAILED - {e}")
+        net.train()
+        log_string("=== END DIAGNOSTIC ===")
     
     # TensorBoard Visualizers (only main process writes to TensorBoard)
     if is_main_process():
