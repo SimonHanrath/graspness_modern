@@ -816,6 +816,32 @@ if __name__ == '__main__':
     # Create model, optimizer, and scaler (each process creates its own for DDP)
     net, optimizer, scaler, start_epoch, device = create_model_and_optimizer()
     
+    # DIAGNOSTIC: Quick test of validation forward pass before full training
+    if VAL_DATALOADER is not None and is_main_process():
+        log_string("=== DIAGNOSTIC: Testing validation forward pass ===")
+        net.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(VAL_DATALOADER):
+                if i >= 3:  # Test first 3 batches only
+                    break
+                for key in batch:
+                    if 'list' not in key:
+                        batch[key] = batch[key].to(device)
+                    else:
+                        for j in range(len(batch[key])):
+                            for k in range(len(batch[key][j])):
+                                batch[key][j][k] = batch[key][j][k].to(device)
+                log_string(f"  Val batch {i}: {batch['coors'].shape[0]} voxels")
+                try:
+                    with autocast(enabled=cfgs.use_amp, device_type=device.type):
+                        end_points = net(batch)
+                    log_string(f"  Val batch {i}: SUCCESS")
+                except RuntimeError as e:
+                    log_string(f"  Val batch {i}: FAILED - {e}")
+                    break  # Stop on first failure
+        net.train()
+        log_string("=== END DIAGNOSTIC ===")
+    
     # TensorBoard Visualizers (only main process writes to TensorBoard)
     if is_main_process():
         TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
