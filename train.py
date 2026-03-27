@@ -1,6 +1,10 @@
 import os
 import sys
 
+# Fix spconv algorithm tuner issue on Ada GPUs (L40S, RTX 4090, etc.)
+# Without this, validation may fail with "can't find suitable algorithm" errors
+os.environ.setdefault('SPCONV_ALGO', 'MaskImplicitGemm')
+
 import numpy as np
 from datetime import datetime
 import argparse
