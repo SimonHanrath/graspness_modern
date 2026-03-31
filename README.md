@@ -84,11 +84,6 @@ python dataset/simplify_dataset.py --dataset_root /datasets/graspnet
 For training command examples refer to [command_train.sh](command_train.sh)
 
 
-## Model Weights
-
-
-
-
 ## Inference Server
 
 For integration with robotic systems, a ZeroMQ-based server is provided:
