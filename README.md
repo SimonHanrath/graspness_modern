@@ -31,8 +31,8 @@ This is a refactored fork of the [graspness_implementation](https://github.com/r
 
 1. **Clone the repository:**
 ```bash
-git clone git@github.com:SimonHanrath/graspness_unofficial_but_better.git
-cd graspness_unofficial_but_better
+git clone git@github.com:SimonHanrath/graspness_modern.git
+cd graspness_modern
 ```
 
 2. **Build the container:**
@@ -114,7 +114,7 @@ The server accepts point clouds via ZMQ and returns grasp candidates as JSON:
 
 ## Model Weights
 
-Pretrained model weights are available under [Releases](https://github.com/SimonHanrath/graspness_unofficial_but_better/releases).
+Pretrained model weights are available under [Releases](https://github.com/SimonHanrath/graspness_modern/releases).
 
 ## Acknowledgement
 
