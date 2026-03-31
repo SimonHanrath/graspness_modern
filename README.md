@@ -119,5 +119,5 @@ Pretrained model weights are available under [Releases](https://github.com/Simon
 ## Acknowledgement
 
 - Original GSNet implementation: [graspnet-implementation](https://github.com/rhett-chen/graspness_implementation/tree/main)
-- Point Transformer V3 & Sonata: [Pointcept](https://github.com/Pointcept/Pointcept)
+- Point Transformer V3 & Sonata: [Pointcept](https://github.com/Pointcept/Pointcept), [Sonata](https://github.com/facebookresearch/sonata)
 - Sparse convolutions: [spconv](https://github.com/traveller59/spconv)
