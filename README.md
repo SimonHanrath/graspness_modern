@@ -2,7 +2,7 @@
 
 Modernized implementation of "Graspness Discovery in Clutters for Fast and Accurate Grasp Detection" (ICCV 2021).
 
-This is a refactored fork of the [unofficial implementation](https://github.com/rhett-chen/graspness_unofficial) by [Zibo Chen](https://github.com/rhett-chen), with significant changes to improve portability, maintainability, and ease of installation.
+This is a refactored fork of the [graspness_implementation](https://github.com/rhett-chen/graspness_implementation) by [Zibo Chen](https://github.com/rhett-chen), with significant changes to improve portability, maintainability, and ease of installation.
 
 [[paper](https://openaccess.thecvf.com/content/ICCV2021/papers/Wang_Graspness_Discovery_in_Clutters_for_Fast_and_Accurate_Grasp_Detection_ICCV_2021_paper.pdf)]
 [[dataset](https://graspnet.net/)]
@@ -15,10 +15,10 @@ This is a refactored fork of the [unofficial implementation](https://github.com/
 - **No MinkowskiEngine**: Replaced with [spconv](https://github.com/traveller59/spconv) for sparse convolutions
 - **No custom CUDA extensions**: PointNet++ operators reimplemented in pure PyTorch (no compilation required)
 - **Docker-based installation**: Single-command setup with broad GPU support (Pascal through Hopper)
-- **Multiple backbone options**: Point Transformer V3 (default), Sonata, ResUNet14/18, PointNet++
+- **Multiple backbone options**: ResUNet14, Point Transformer V3, Sonata, PointNet++
 - **Modern training features**: DDP multi-GPU, mixed precision (AMP), gradient accumulation, cosine LR with warmup
 - **Integration server**: ZeroMQ-based inference server for robotic applications
-- **Stable score prediction**: Optional grasp stability prediction to penalize tipping-prone grasps
+- **Stable score prediction**: Optional grasp stability prediction to penalize tipping-prone grasps inpspired by [Anygrasp](https://github.com/graspnet/anygrasp_sdk) 
 
 ## Requirements
 
@@ -29,108 +29,71 @@ This is a refactored fork of the [unofficial implementation](https://github.com/
 
 ### Docker (Recommended)
 
-Build the container:
+1. **Clone the repository:**
+```bash
+git clone git@github.com:SimonHanrath/graspness_unofficial_but_better.git
+cd graspness_unofficial_but_better
+```
+
+2. **Build the container:**
 ```bash
 docker build -t graspness_modern .
 ```
 
-Run the container:
+3. **Run the container:**
 ```bash
 docker run --rm -it --runtime=nvidia \
+    --shm-size=8g \
     -v $(pwd):/workspace \
     -v /path/to/graspnet:/datasets/graspnet \
     graspness_modern bash
 ```
 
-### Manual Installation (Advanced)
-
-If you prefer not to use Docker, the main dependencies are:
-- Python 3.10+
-- PyTorch 2.0+ with CUDA
-- spconv-cu12x
-- [graspnetAPI](https://github.com/graspnet/graspnetAPI)
-
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install spconv-cu121 numpy scipy tqdm tensorboard
-pip install graspnetAPI
-```
+**Notes:**
+- `--shm-size=8g` is recommended for PyTorch DataLoader with multiple workers
+- Replace `/path/to/graspnet` with your local path to the GraspNet-1Billion dataset
+- Add `-e NVIDIA_VISIBLE_DEVICES=0` to select a specific GPU
+- Add `-p 5555:5588` if using the ZMQ inference server
 
 ## Dataset Preparation
 
-Download the GraspNet-1Billion dataset from [graspnet.net](https://graspnet.net/).
+### Download GraspNet-1Billion
+
+Download the dataset from [graspnet.net](https://graspnet.net/). You will need to register for an account.
 
 ### Generate Graspness Labels
-Point-level graspness labels are not included in the original dataset:
+
+Point-level graspness labels are not included in the original dataset and need to be generated. The generation code is in [dataset/generate_graspness.py](dataset/generate_graspness.py).
+
 ```bash
 python dataset/generate_graspness.py --dataset_root /datasets/graspnet --camera_type realsense
 ```
 
-### Simplify Grasp Labels (Optional)
-Reduce memory footprint by removing redundant data:
+Or use `--camera_type kinect` for Kinect camera data.
+
+### Simplify Dataset (Optional)
+
+The original dataset grasp label files contain redundant data. Simplifying them significantly reduces memory usage. The code is in [dataset/simplify_dataset.py](dataset/simplify_dataset.py).
+
 ```bash
 python dataset/simplify_dataset.py --dataset_root /datasets/graspnet
 ```
 
 ## Training
 
-Basic training:
-```bash
-python train.py \
-    --dataset_root /datasets/graspnet \
-    --camera realsense \
-    --model_name gsnet_ptv3 \
-    --log_dir logs/gsnet_ptv3 \
-    --backbone transformer \
-    --batch_size 2 \
-    --max_epoch 10
-```
+For training command examples refer to [command_train.sh](command_train.sh)
 
-### Backbone Options
-- `transformer` - Point Transformer V3 (default)
-- `transformer_pretrained` - Point Transformer V3 with pretrained weights
-- `sonata` - Sonata self-supervised PTv3 (CVPR 2025)
-- `resunet` - ResUNet14 sparse convolutional backbone
-- `resunet18` - ResUNet18 (more layers)
-- `resunet_rgb` / `resunet18_rgb` - ResUNet with RGB features
-- `pointnet2` - PointNet++ backbone
 
-### Advanced Training Options
-```bash
-python train.py \
-    --dataset_root /datasets/graspnet \
-    --camera realsense \
-    --model_name gsnet_sonata \
-    --log_dir logs/gsnet_sonata \
-    --backbone sonata \
-    --batch_size 1 \
-    --max_epoch 20 \
-    --use_amp \
-    --num_workers 4 \
-    --persistent_workers \
-    --lazy_grasp_labels \
-    --cosine_lr \
-    --grad_clip 1.0 \
-    --weight_decay 0.02 \
-    --enable_stable_score
-```
+## Model Weights
 
-For pretrained backbones (`transformer_pretrained`, `sonata`), layer-wise learning rate decay is applied by default (`--layer_decay 0.65`).
 
-### Multi-GPU Training (DDP)
-```bash
-torchrun --nproc_per_node=2 train.py \
-    --dataset_root /datasets/graspnet \
-    --camera realsense \
-    --model_name gsnet_ddp \
-    --log_dir logs/gsnet_ddp \
-    --backbone resunet \
-    --batch_size 1
-```
+
 
 ## Inference Server
 
 For integration with robotic systems, a ZeroMQ-based server is provided:
+
+Example:
 
 ```bash
 python zmq_server.py \
@@ -154,30 +117,12 @@ The server accepts point clouds via ZMQ and returns grasp candidates as JSON:
 ]
 ```
 
-Additional options: `--max_angle_to_vertical_deg`, `--vertical_axis`, `--enable_stable_score`.
+## Model Weights
 
-## Project Structure
-
-```
-├── dataset/                 # Dataset loading and preprocessing
-│   ├── graspnet_dataset.py # PyTorch dataset
-│   ├── generate_graspness.py
-│   └── generate_graspness_full.py  # With floor points
-├── models/                  # Model architectures
-│   ├── graspnet.py         # Main GSNet model
-│   ├── backbone_resunet14.py
-│   ├── backbone_pointnet2.py
-│   └── pointcept/          # Point Transformer V3 & Sonata
-├── utils/                   # Utilities
-│   └── pointnet/           # Pure PyTorch PointNet++ ops
-├── dockerfile              # Docker build file
-├── train.py                # Training script
-└── zmq_server.py           # ZMQ inference server
-```
+Pretrained model weights are available under [Releases](https://github.com/SimonHanrath/graspness_unofficial_but_better/releases).
 
 ## Acknowledgement
 
-- Original GSNet implementation: [graspnet-baseline](https://github.com/graspnet/graspnet-baseline)
-- Unofficial implementation: [graspness_unofficial](https://github.com/rhett-chen/graspness_unofficial) by Zibo Chen
+- Original GSNet implementation: [graspnet-implementation](https://github.com/rhett-chen/graspness_implementation/tree/main)
 - Point Transformer V3 & Sonata: [Pointcept](https://github.com/Pointcept/Pointcept)
 - Sparse convolutions: [spconv](https://github.com/traveller59/spconv)
