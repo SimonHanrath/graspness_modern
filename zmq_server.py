@@ -1,10 +1,10 @@
 """
-AnyGrasp ZMQ Server - receives point cloud and returns grasp candidates.
+ZMQ Server - receives point cloud and returns grasp candidates.
 
 Run inside your Docker container:
-    python anygrasp_zmq_server.py --port 5588 --checkpoint_path gsnet_dev_epoch10.tar --backbone resunet --graspness_threshold 0.01
-    python anygrasp_zmq_server.py --port 5588 --checkpoint_path gsnet_sonata_epoch15_llrd.tar --backbone sonata --graspness_threshold 0.1 --max_angle_to_vertical_deg 35 --vertical_axis z
-    python anygrasp_zmq_server.py --port 5588 --gsnet_resunet_epoch05.tar --backbone resunet --graspness_threshold 0.01 --enable_stable_score
+    python zmq_server.py --port 5588 --checkpoint_path gsnet_dev_epoch10.tar --backbone resunet --graspness_threshold 0.01
+    python zmq_server.py --port 5588 --checkpoint_path gsnet_sonata_epoch15_llrd.tar --backbone sonata --graspness_threshold 0.1 --max_angle_to_vertical_deg 35 --vertical_axis z
+    python zmq_server.py --port 5588 --checkpoint_path gsnet_resunet_epoch05.tar --backbone resunet --graspness_threshold 0.01 --enable_stable_score
 
 
 The Docker container should expose the port:

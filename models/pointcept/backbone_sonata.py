@@ -40,7 +40,7 @@ from .misc import offset2batch, batch2offset
 
 
 # =============================================================================
-# Inline components (same as in backbone_pointnet_transformer_pointcept.py)
+# Inline components (same as in backbone_ptv3.py)
 # =============================================================================
 
 class DropPath(nn.Module):

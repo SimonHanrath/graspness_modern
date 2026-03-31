@@ -1,6 +1,9 @@
 import os
 import sys
 
+import math
+import re
+
 import numpy as np
 from datetime import datetime
 import argparse
@@ -62,11 +65,11 @@ parser.add_argument('--train_split', default='train', help='Training split [trai
 parser.add_argument('--checkpoint_path', help='Model checkpoint path', default=None)
 parser.add_argument('--model_name', type=str, default=None)
 parser.add_argument('--log_dir', default='logs/log')
-parser.add_argument('--num_point', type=int, default=15000, help='Point Number [default: 20000]')
+parser.add_argument('--num_point', type=int, default=15000, help='Point Number [default: 15000]')
 parser.add_argument('--seed_feat_dim', default=512, type=int, help='Point wise feature dim')
 parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size to process point clouds ')
-parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 18]')
-parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
+parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 10]')
+parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 4]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
 parser.add_argument('--use_amp', action='store_true', default=False,
@@ -106,7 +109,7 @@ parser.add_argument('--include_floor', action='store_true', default=False,
 parser.add_argument('--lambda_stable', type=float, default=10.0,
                     help='Weight for stable score loss term [default: 10.0]')
 parser.add_argument('--graspness_threshold', type=float, default=0.1,
-                    help='Threshold for graspness score filtering during forward pass [default: -0.1]')
+                    help='Threshold for graspness score filtering during forward pass [default: 0.1]')
 parser.add_argument('--nsample', type=int, default=16,
                     help='Number of samples for cloud crop in GraspNet [default: 16]')
 parser.add_argument('--cosine_lr', action='store_true', default=False,
@@ -143,13 +146,10 @@ if cfgs.backbone_lr_scale is None:
         cfgs.backbone_lr_scale = 1.0
 
 # Auto-enable cosine LR with warmup for pretrained backbones (unless user explicitly set cosine_lr)
-_is_pretrained_backbone = cfgs.backbone in ('transformer_pretrained', 'sonata')
-if _is_pretrained_backbone and not cfgs.cosine_lr:
+if cfgs.backbone in ('transformer_pretrained', 'sonata') and not cfgs.cosine_lr:
     cfgs.cosine_lr = True
 
-# =============================================
 # Distributed Training Setup
-# =============================================
 def is_distributed():
     """Check if we're running in distributed mode."""
     return dist.is_available() and dist.is_initialized()
@@ -159,18 +159,6 @@ def is_main_process():
     if not is_distributed():
         return True
     return dist.get_rank() == 0
-
-def get_world_size():
-    """Get the number of processes in the distributed group."""
-    if not is_distributed():
-        return 1
-    return dist.get_world_size()
-
-def get_rank():
-    """Get the rank of the current process."""
-    if not is_distributed():
-        return 0
-    return dist.get_rank()
 
 def setup_distributed():
     """Initialize distributed training if running with torchrun."""
@@ -202,7 +190,7 @@ def cleanup_distributed():
         dist.destroy_process_group()
 
 # Initialize distributed training
-LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE = setup_distributed()
+LOCAL_RANK, _, WORLD_SIZE = setup_distributed()
 
 
 EPOCH_CNT = 0
@@ -228,7 +216,6 @@ def log_string(out_str):
         print(out_str)
 
 
-
 # Init datasets and dataloaders 
 def my_worker_init_fn(worker_id):
     np.random.seed(np.random.get_state()[1][0] + worker_id)
@@ -248,7 +235,7 @@ def create_dataloaders():
     if cfgs.enable_stable_score:
         log_string("Stable score prediction enabled (labels will be auto-computed if missing)")
 
-    use_rgb = (cfgs.backbone in ['transformer_pretrained', 'resunet_rgb'])
+    use_rgb = cfgs.backbone.endswith('_rgb') or cfgs.backbone == 'transformer_pretrained'
     
     # Determine training split (use train_reduced if validation is enabled)
     actual_train_split = 'train_reduced' if cfgs.use_val and cfgs.train_split == 'train' else cfgs.train_split
@@ -261,7 +248,7 @@ def create_dataloaders():
     log_string(f'train dataset length: {len(train_dataset)} (split: {actual_train_split})')
 
 
-    # For overfitting test, use only 1 sample repeated 256 times
+    # For overfitting test use only 1 sample repeated 256 times
     if cfgs.single_sample:
         from torch.utils.data import Subset
         train_dataset = Subset(train_dataset, [0] * 256)
@@ -270,14 +257,13 @@ def create_dataloaders():
     
     # Create samplers
     # SceneAwareSampler groups samples by scene to maximize collision label cache hits
-    # This is much faster than random shuffle with lazy loading
     train_sampler = None
     if is_distributed():
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
         log_string(f'Using DistributedSampler with {WORLD_SIZE} processes')
     elif cfgs.single_sample:
         # For single-sample overfitting, don't use SceneAwareSampler (Subset doesn't have scenename)
-        train_sampler = None  # Will use default sequential sampling
+        train_sampler = None
         log_string('Single-sample mode: using default sampler')
     else:
         # Use scene-aware sampling for cache-friendly data loading
@@ -348,7 +334,6 @@ def create_model_and_optimizer():
         Sonata:  backbone.encoder.enc.enc{0-4}.block*  / backbone.encoder.embedding.*
         PTv3:    backbone.enc.enc{0-4}.block*  / backbone.dec.dec{0-3}.* / backbone.embedding.*
         """
-        import re
         # Encoder stages (both Sonata and PTv3)
         m = re.search(r'\.enc\.enc(\d+)\.', name)
         if m:
@@ -469,7 +454,6 @@ def create_model_and_optimizer():
         # In finetune mode, skip optimizer state and reset epoch
         if cfgs.finetune:
             log_string("-> FINETUNE mode: loaded weights from %s, resetting epoch to 0" % CHECKPOINT_PATH)
-            # Freeze all except stable score head when fine-tuning for stable score
             if cfgs.enable_stable_score:
                 freeze_for_stable_finetune(net, log_string)
         else:
@@ -497,7 +481,6 @@ def get_current_lr(epoch, base_lr):
         if epoch < cfgs.warmup_epochs:
             return base_lr * (epoch + 1) / cfgs.warmup_epochs
         else:
-            import math
             progress = (epoch - cfgs.warmup_epochs) / max(1, cfgs.max_epoch - cfgs.warmup_epochs)
             return base_lr * 0.5 * (1 + math.cos(math.pi * progress))
     else:
@@ -531,7 +514,7 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
     net.train()
     batch_interval = 20
     
-    # Zero gradients at the start of each epoch to ensure clean state
+    # Zero gradients at the start of each epoch
     optimizer.zero_grad()
     
     # Only show progress bar on main process to avoid duplicates
@@ -568,47 +551,7 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
                 log_string(f'[Train] Skipping batch {batch_idx}: spconv error - {e}')
                 continue
             raise  # Re-raise other RuntimeErrors
-        
-        # Debug: Print backbone and graspness statistics for first batch of first epoch
-        if batch_idx == 0 and EPOCH_CNT == 0 and is_main_process():
-            print("\n" + "="*80)
-            print("DEBUG: Backbone & Graspness Statistics (Epoch 0, Batch 0)")
-            print("="*80)
-            print(f"Backbone features:")
-            print(f"  mean={end_points['backbone_feat_mean'].item():.6f}")
-            print(f"  std={end_points['backbone_feat_std'].item():.6f}")
-            print(f"  min={end_points['backbone_feat_min'].item():.6f}")
-            print(f"  max={end_points['backbone_feat_max'].item():.6f}")
-            print(f"  abs_mean={end_points['backbone_feat_abs_mean'].item():.6f}")
-            graspness = end_points['graspness_score']
-            print(f"\nGraspness scores:")
-            print(f"  mean={graspness.mean().item():.6f}")
-            print(f"  std={graspness.std().item():.6f}")
-            print(f"  min={graspness.min().item():.6f}")
-            print(f"  max={graspness.max().item():.6f}")
-            print(f"  >0.01: {(graspness > 0.01).sum().item()} / {graspness.numel()} ({100*(graspness > 0.01).float().mean().item():.2f}%)")
-            print(f"  >0.1:  {(graspness > 0.1).sum().item()} / {graspness.numel()} ({100*(graspness > 0.1).float().mean().item():.2f}%)")
-            print(f"  >0.3:  {(graspness > 0.3).sum().item()} / {graspness.numel()} ({100*(graspness > 0.3).float().mean().item():.2f}%)")
-            print(f"\nGraspable count (after threshold): {end_points['graspable_count_stage1'].item():.1f}")
-            print("="*80 + "\n")
-            
-            # Save raw distribution data for later plotting
-            try:
-                graspness_np = graspness.detach().cpu().numpy().flatten()
-                data_path = os.path.join('tmp', 'init_distribution_data.npz')
-                np.savez(data_path,
-                    graspness_scores=graspness_np,
-                    backbone_mean=end_points['backbone_feat_mean'].item(),
-                    backbone_std=end_points['backbone_feat_std'].item(),
-                    backbone_min=end_points['backbone_feat_min'].item(),
-                    backbone_max=end_points['backbone_feat_max'].item(),
-                    backbone_abs_mean=end_points['backbone_feat_abs_mean'].item(),
-                )
-                print(f"Saved distribution data to: {data_path}")
-                print("To plot, run: python experiments/plots/plot_init_distribution.py --data <path>")
-            except Exception as e:
-                print(f"Warning: Could not save distribution data: {e}")
-        
+               
         # Backward pass with gradient scaling
         scaler.scale(loss).backward()
         
@@ -622,10 +565,6 @@ def train_one_epoch(net, optimizer, scaler, device, train_dataloader, train_writ
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-        
-        """# Periodic cache clearing to prevent memory fragmentation
-        if (batch_idx + 1) % 100 == 0:
-            torch.cuda.empty_cache()"""
 
         for key in end_points:
             if 'loss' in key or 'acc' in key or 'prec' in key or 'recall' in key or 'count' in key:
@@ -782,7 +721,6 @@ if __name__ == '__main__':
         TRAIN_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'train'))
         VAL_WRITER = SummaryWriter(os.path.join(cfgs.log_dir, 'val')) if cfgs.use_val else None
     else:
-        # Create dummy writers for non-main processes (won't be used but simplifies code)
         TRAIN_WRITER = None
         VAL_WRITER = None
     

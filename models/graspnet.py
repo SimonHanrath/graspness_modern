@@ -10,7 +10,7 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
 from models.backbone_resunet14 import SPconvUNet14D, SPconvUNet18D
-from models.pointcept.backbone_pointnet_transformer_pointcept import (
+from models.pointcept.backbone_ptv3 import (
     PointTransformerV3EncoderFullRes,
     create_ptv3_backbone_grasp,
 )
