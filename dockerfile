@@ -44,9 +44,6 @@ RUN pip install --no-cache-dir \
 # spconv: use cu121 wheel (works on CUDA 12.x runtimes)
 RUN pip install --no-cache-dir "spconv-cu121>=2.3,<2.5"
 
-# trimesh for stable score computation (COG calculation)
-# RUN pip install --no-cache-dir "trimesh>=4.0,<5"
-
 # Prepare cache dir with open permissions
 RUN mkdir -p /opt/cache && chmod -R 777 /opt/cache
 

@@ -8,7 +8,7 @@ This is a refactored fork of the [unofficial implementation](https://github.com/
 [[dataset](https://graspnet.net/)]
 [[API](https://github.com/graspnet/graspnetAPI)]
 
-![Panda Grasp Demo](doc/panda_grasp.gif)
+![Panda Grasp Demo](media/panda_grasp.gif)
 
 ## Key Changes from Original
 
@@ -48,12 +48,12 @@ If you prefer not to use Docker, the main dependencies are:
 - Python 3.10+
 - PyTorch 2.0+ with CUDA
 - spconv-cu12x
-- graspnetAPI (included in this repo)
+- [graspnetAPI](https://github.com/graspnet/graspnetAPI)
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 pip install spconv-cu121 numpy scipy tqdm tensorboard
-pip install ./graspnetAPI
+pip install graspnetAPI
 ```
 
 ## Dataset Preparation
@@ -128,30 +128,12 @@ torchrun --nproc_per_node=2 train.py \
     --batch_size 1
 ```
 
-## Testing and Evaluation
-
-```bash
-python model_analysis/test.py \
-    --dataset_root /datasets/graspnet \
-    --camera realsense \
-    --checkpoint_path logs/gsnet_ptv3/gsnet_ptv3_epoch10.tar \
-    --dump_dir dumps/gsnet_ptv3 \
-    --backbone transformer \
-    --split test_seen \
-    --infer --eval
-```
-
-Options:
-- `--split`: `test_seen`, `test_similar`, `test_novel` (default: `test_seen`)
-- `--collision_thresh -1`: Skip collision detection for faster inference
-- `--enable_stable_score`: Enable stability prediction (must match training)
-
 ## Inference Server
 
 For integration with robotic systems, a ZeroMQ-based server is provided:
 
 ```bash
-python anygrasp_zmq_server.py \
+python zmq_server.py \
     --checkpoint_path logs/gsnet_resunet/gsnet_resunet_epoch10.tar \
     --backbone resunet \
     --port 5588 \
@@ -174,9 +156,6 @@ The server accepts point clouds via ZMQ and returns grasp candidates as JSON:
 
 Additional options: `--max_angle_to_vertical_deg`, `--vertical_axis`, `--enable_stable_score`.
 
-## Model Weights
-TODO
-
 ## Project Structure
 
 ```
@@ -191,12 +170,9 @@ TODO
 │   └── pointcept/          # Point Transformer V3 & Sonata
 ├── utils/                   # Utilities
 │   └── pointnet/           # Pure PyTorch PointNet++ ops
-├── model_analysis/          # Testing and evaluation
-│   └── test.py             # Inference and evaluation script
-├── graspnetAPI/            # GraspNet evaluation API
 ├── dockerfile              # Docker build file
 ├── train.py                # Training script
-└── anygrasp_zmq_server.py  # ZMQ inference server
+└── zmq_server.py           # ZMQ inference server
 ```
 
 ## Acknowledgement
