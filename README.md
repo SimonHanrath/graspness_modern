@@ -1,4 +1,4 @@
-# GSNet Modern (Work in Progress)
+# GSNet Modern
 
 Modernized implementation of "Graspness Discovery in Clutters for Fast and Accurate Grasp Detection" (ICCV 2021).
 
@@ -8,14 +8,17 @@ This is a refactored fork of the [unofficial implementation](https://github.com/
 [[dataset](https://graspnet.net/)]
 [[API](https://github.com/graspnet/graspnetAPI)]
 
+![Panda Grasp Demo](doc/panda_grasp.gif)
+
 ## Key Changes from Original
 
 - **No MinkowskiEngine**: Replaced with [spconv](https://github.com/traveller59/spconv) for sparse convolutions
 - **No custom CUDA extensions**: PointNet++ operators reimplemented in pure PyTorch (no compilation required)
 - **Docker-based installation**: Single-command setup with broad GPU support (Pascal through Hopper)
-- **Multiple backbone options**: ResUNet (default), PointNet++, Point Transformer V3
-- **Modern training features**: DDP multi-GPU, mixed precision (AMP), gradient accumulation
+- **Multiple backbone options**: Point Transformer V3 (default), Sonata, ResUNet14/18, PointNet++
+- **Modern training features**: DDP multi-GPU, mixed precision (AMP), gradient accumulation, cosine LR with warmup
 - **Integration server**: ZeroMQ-based inference server for robotic applications
+- **Stable score prediction**: Optional grasp stability prediction to penalize tipping-prone grasps
 
 ## Requirements
 
@@ -76,28 +79,30 @@ Basic training:
 python train.py \
     --dataset_root /datasets/graspnet \
     --camera realsense \
-    --model_name gsnet_resunet \
-    --log_dir logs/gsnet_resunet \
-    --backbone resunet \
+    --model_name gsnet_ptv3 \
+    --log_dir logs/gsnet_ptv3 \
+    --backbone transformer \
     --batch_size 2 \
     --max_epoch 10
 ```
 
 ### Backbone Options
-- `resunet` - ResUNet14 sparse convolutional backbone (default, recommended)
-- `resunet_rgb` - ResUNet14 with RGB features
-- `pointnet2` - PointNet++ backbone
-- `transformer` - Point Transformer V3
+- `transformer` - Point Transformer V3 (default)
 - `transformer_pretrained` - Point Transformer V3 with pretrained weights
+- `sonata` - Sonata self-supervised PTv3 (CVPR 2025)
+- `resunet` - ResUNet14 sparse convolutional backbone
+- `resunet18` - ResUNet18 (more layers)
+- `resunet_rgb` / `resunet18_rgb` - ResUNet with RGB features
+- `pointnet2` - PointNet++ backbone
 
 ### Advanced Training Options
 ```bash
 python train.py \
     --dataset_root /datasets/graspnet \
     --camera realsense \
-    --model_name gsnet_advanced \
-    --log_dir logs/gsnet_advanced \
-    --backbone resunet \
+    --model_name gsnet_sonata \
+    --log_dir logs/gsnet_sonata \
+    --backbone sonata \
     --batch_size 1 \
     --max_epoch 20 \
     --use_amp \
@@ -105,8 +110,12 @@ python train.py \
     --persistent_workers \
     --lazy_grasp_labels \
     --cosine_lr \
-    --grad_clip 1.0
+    --grad_clip 1.0 \
+    --weight_decay 0.02 \
+    --enable_stable_score
 ```
+
+For pretrained backbones (`transformer_pretrained`, `sonata`), layer-wise learning rate decay is applied by default (`--layer_decay 0.65`).
 
 ### Multi-GPU Training (DDP)
 ```bash
@@ -125,26 +134,45 @@ torchrun --nproc_per_node=2 train.py \
 python model_analysis/test.py \
     --dataset_root /datasets/graspnet \
     --camera realsense \
-    --checkpoint_path logs/gsnet_resunet/gsnet_resunet_epoch10.tar \
-    --dump_dir dumps/gsnet_resunet \
-    --backbone resunet \
+    --checkpoint_path logs/gsnet_ptv3/gsnet_ptv3_epoch10.tar \
+    --dump_dir dumps/gsnet_ptv3 \
+    --backbone transformer \
+    --split test_seen \
     --infer --eval
 ```
 
-Set `--collision_thresh -1` for faster inference without collision detection.
+Options:
+- `--split`: `test_seen`, `test_similar`, `test_novel` (default: `test_seen`)
+- `--collision_thresh -1`: Skip collision detection for faster inference
+- `--enable_stable_score`: Enable stability prediction (must match training)
 
 ## Inference Server
 
 For integration with robotic systems, a ZeroMQ-based server is provided:
 
 ```bash
-python GraspDetectionClient.py \
+python anygrasp_zmq_server.py \
     --checkpoint_path logs/gsnet_resunet/gsnet_resunet_epoch10.tar \
-    --port 5555 \
-    --collision_thresh 0.01
+    --backbone resunet \
+    --port 5588 \
+    --graspness_threshold 0.01
 ```
 
-The server accepts compressed point clouds (NumPy `.npz` format) and returns grasp candidates as JSON. See [GraspDetectionClient.py](GraspDetectionClient.py) for protocol details.
+The server accepts point clouds via ZMQ and returns grasp candidates as JSON:
+```json
+[
+  {
+    "translation": [x, y, z],
+    "rotation_matrix": [[r00, r01, r02], ...],
+    "score": 0.85,
+    "width": 0.08,
+    "height": 0.02,
+    "depth": 0.02
+  }
+]
+```
+
+Additional options: `--max_angle_to_vertical_deg`, `--vertical_axis`, `--enable_stable_score`.
 
 ## Model Weights
 TODO
@@ -153,23 +181,27 @@ TODO
 
 ```
 ├── dataset/                 # Dataset loading and preprocessing
+│   ├── graspnet_dataset.py # PyTorch dataset
+│   ├── generate_graspness.py
+│   └── generate_graspness_full.py  # With floor points
 ├── models/                  # Model architectures
 │   ├── graspnet.py         # Main GSNet model
 │   ├── backbone_resunet14.py
 │   ├── backbone_pointnet2.py
-│   └── pointcept/          # Point Transformer V3
+│   └── pointcept/          # Point Transformer V3 & Sonata
 ├── utils/                   # Utilities
 │   └── pointnet/           # Pure PyTorch PointNet++ ops
-├── model_analysis/          # Testing and evaluation scripts
-├── graspnetAPI/            # Evaluation API
+├── model_analysis/          # Testing and evaluation
+│   └── test.py             # Inference and evaluation script
+├── graspnetAPI/            # GraspNet evaluation API
 ├── dockerfile              # Docker build file
 ├── train.py                # Training script
-└── GraspDetectionClient.py # ZMQ inference server
+└── anygrasp_zmq_server.py  # ZMQ inference server
 ```
 
 ## Acknowledgement
 
 - Original GSNet implementation: [graspnet-baseline](https://github.com/graspnet/graspnet-baseline)
 - Unofficial implementation: [graspness_unofficial](https://github.com/rhett-chen/graspness_unofficial) by Zibo Chen
-- Point Transformer V3: [Pointcept](https://github.com/Pointcept/Pointcept)
+- Point Transformer V3 & Sonata: [Pointcept](https://github.com/Pointcept/Pointcept)
 - Sparse convolutions: [spconv](https://github.com/traveller59/spconv)
